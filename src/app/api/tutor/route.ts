@@ -1,0 +1,123 @@
+import { NextResponse } from "next/server"
+import { z } from "zod"
+import { loadAIConfig, isAIConfigured } from "@/lib/ai/config"
+import { existingIdsFrom, tutorContextSchema } from "@/lib/ai/context"
+import { GeminiProvider } from "@/lib/ai/gemini-provider"
+import { MAX_QUESTION_LENGTH, runTeachingPipeline, type TeachingPipelineFailure } from "@/lib/ai/pipeline"
+import type { AIProvider } from "@/lib/ai/provider"
+import { createRateLimiter, type RateLimiter } from "@/lib/ai/rate-limiter"
+import { resolveTeachingPlanIds } from "@/lib/ai/teaching-protocol"
+
+/**
+ * POST /api/tutor
+ *
+ * The only place a browser talks to the AI. Accepts a student's question,
+ * runs it through the provider-agnostic pipeline, and returns a validated
+ * teaching plan (or a structured error). The Gemini API key never leaves
+ * this server - `loadAIConfig` only ever runs here.
+ */
+
+// A raw request body bigger than this is rejected before it is even
+// JSON-parsed, independent of the (much smaller) question-length cap the
+// pipeline enforces afterwards.
+const MAX_BODY_BYTES = 10_000
+
+const requestSchema = z.strictObject({
+  question: z.string(),
+  context: tutorContextSchema.optional(),
+})
+
+const config = loadAIConfig()
+const provider: AIProvider = new GeminiProvider({ config })
+const rateLimiter: RateLimiter = createRateLimiter({
+  capacity: config.rateLimit.capacity,
+  refillPerSec: config.rateLimit.refillPerSec,
+})
+
+function clientKeyFrom(request: Request): string {
+  const forwardedFor = request.headers.get("x-forwarded-for")
+  return forwardedFor?.split(",")[0]?.trim() || "unknown"
+}
+
+const FAILURE_STATUS: Record<TeachingPipelineFailure["kind"], number> = {
+  invalid_question: 400,
+  missing_api_key: 500,
+  rate_limited: 429,
+  timeout: 504,
+  cancelled: 499,
+  invalid_output: 502,
+  provider_error: 502,
+}
+
+const FAILURE_MESSAGE: Record<TeachingPipelineFailure["kind"], string> = {
+  invalid_question: "That question couldn't be sent - check its length and try again.",
+  missing_api_key: "The AI tutor isn't configured yet on this server (missing API key).",
+  rate_limited: "You're asking questions a bit fast - please wait a few seconds and try again.",
+  timeout: "The AI tutor took too long to respond. Please try again.",
+  cancelled: "The request was cancelled.",
+  invalid_output: "The AI tutor produced an answer that couldn't be understood. Please try again.",
+  provider_error: "The AI tutor is temporarily unavailable. Please try again shortly.",
+}
+
+export interface TutorRouteDeps {
+  provider: AIProvider
+  rateLimiter: RateLimiter
+  isConfigured: boolean
+}
+
+export async function handleTutorRequest(request: Request, deps: TutorRouteDeps): Promise<Response> {
+  const bodyText = await request.text()
+  if (bodyText.length > MAX_BODY_BYTES) {
+    return NextResponse.json(
+      { ok: false, error: { code: "invalid_question", message: FAILURE_MESSAGE.invalid_question } },
+      { status: 400 }
+    )
+  }
+
+  let bodyJson: unknown
+  try {
+    bodyJson = JSON.parse(bodyText)
+  } catch {
+    return NextResponse.json(
+      { ok: false, error: { code: "invalid_request", message: "Request body must be valid JSON." } },
+      { status: 400 }
+    )
+  }
+
+  const parsedBody = requestSchema.safeParse(bodyJson)
+  if (!parsedBody.success) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: { code: "invalid_request", message: `Expected { question: string (<= ${MAX_QUESTION_LENGTH} chars) }.` },
+      },
+      { status: 400 }
+    )
+  }
+
+  const context = parsedBody.data.context
+  const result = await runTeachingPipeline({
+    question: parsedBody.data.question,
+    context,
+    clientKey: clientKeyFrom(request),
+    provider: deps.provider,
+    rateLimiter: deps.rateLimiter,
+    isConfigured: deps.isConfigured,
+    signal: request.signal,
+  })
+
+  if (!result.ok) {
+    console.error("[tutor] pipeline failure", result.failure)
+    return NextResponse.json(
+      { ok: false, error: { code: result.failure.kind, message: FAILURE_MESSAGE[result.failure.kind] } },
+      { status: FAILURE_STATUS[result.failure.kind] }
+    )
+  }
+
+  const resolvedPlan = resolveTeachingPlanIds(result.plan, existingIdsFrom(context))
+  return NextResponse.json({ ok: true, plan: resolvedPlan, usage: result.usage }, { status: 200 })
+}
+
+export async function POST(request: Request): Promise<Response> {
+  return handleTutorRequest(request, { provider, rateLimiter, isConfigured: isAIConfigured(config) })
+}

@@ -1,0 +1,97 @@
+import { describe, expect, it } from "vitest"
+import {
+  existingIdsFrom,
+  formatContextForPrompt,
+  MAX_CONTEXT_OBJECTS,
+  MAX_HISTORY_TURNS,
+  tutorContextSchema,
+  type ObjectSummary,
+  type TutorContext,
+} from "./context"
+
+function sampleObject(overrides: Partial<ObjectSummary> = {}): ObjectSummary {
+  return { id: "primary-coil", kind: "shape", label: "Primary coil", x: 0, y: 0, w: 100, h: 50, ...overrides }
+}
+
+describe("tutorContextSchema", () => {
+  it("accepts an empty context", () => {
+    expect(tutorContextSchema.safeParse({ objects: [], history: [] }).success).toBe(true)
+  })
+
+  it("accepts a well-formed context with objects and history", () => {
+    const context: TutorContext = {
+      objects: [sampleObject()],
+      history: [{ question: "Explain transformers", concept: "Transformers", lastCommentary: "Done." }],
+    }
+    expect(tutorContextSchema.safeParse(context).success).toBe(true)
+  })
+
+  it("rejects more objects than the cap", () => {
+    const objects = Array.from({ length: MAX_CONTEXT_OBJECTS + 1 }, (_, i) => sampleObject({ id: `o${i}` }))
+    expect(tutorContextSchema.safeParse({ objects, history: [] }).success).toBe(false)
+  })
+
+  it("rejects more history turns than the cap", () => {
+    const history = Array.from({ length: MAX_HISTORY_TURNS + 1 }, () => ({
+      question: "q",
+      concept: "c",
+      lastCommentary: "l",
+    }))
+    expect(tutorContextSchema.safeParse({ objects: [], history }).success).toBe(false)
+  })
+
+  it("rejects an object with an invalid id charset", () => {
+    expect(
+      tutorContextSchema.safeParse({ objects: [sampleObject({ id: "bad id!" })], history: [] }).success
+    ).toBe(false)
+  })
+
+  it("rejects unknown fields on an object summary", () => {
+    const bad = { ...sampleObject(), extra: "nope" }
+    expect(tutorContextSchema.safeParse({ objects: [bad], history: [] }).success).toBe(false)
+  })
+})
+
+describe("existingIdsFrom", () => {
+  it("returns an empty array for undefined context", () => {
+    expect(existingIdsFrom(undefined)).toEqual([])
+  })
+
+  it("returns every object id in order", () => {
+    const context: TutorContext = {
+      objects: [sampleObject({ id: "a" }), sampleObject({ id: "b" })],
+      history: [],
+    }
+    expect(existingIdsFrom(context)).toEqual(["a", "b"])
+  })
+})
+
+describe("formatContextForPrompt", () => {
+  it("returns an empty string for undefined context", () => {
+    expect(formatContextForPrompt(undefined)).toBe("")
+  })
+
+  it("returns an empty string when there are no objects and no history", () => {
+    expect(formatContextForPrompt({ objects: [], history: [] })).toBe("")
+  })
+
+  it("includes each object's exact id so the model can copy it verbatim", () => {
+    const text = formatContextForPrompt({ objects: [sampleObject({ id: "primary-coil" })], history: [] })
+    expect(text).toContain("primary-coil")
+  })
+
+  it("includes each history turn's question and concept", () => {
+    const text = formatContextForPrompt({
+      objects: [],
+      history: [{ question: "Why does it need AC?", concept: "Transformers", lastCommentary: "Flux changes." }],
+    })
+    expect(text).toContain("Why does it need AC?")
+    expect(text).toContain("Transformers")
+  })
+
+  it("instructs the model to reuse existing ids rather than invent new ones", () => {
+    const text = formatContextForPrompt({ objects: [sampleObject()], history: [] }).toLowerCase()
+    expect(text).toMatch(/reuse|exact id|existing/)
+  })
+})
+

@@ -25,7 +25,7 @@ export interface AIConfig {
 
 const DEFAULTS = {
   provider: "gemini" as const,
-  geminiModel: "gemini-3.8-flash",
+  geminiModel: "gemini-3.1-flash-lite",
   maxOutputTokens: 4096,
   maxRetries: 1,
   requestTimeoutMs: 20_000,

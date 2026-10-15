@@ -1,8 +1,13 @@
 import type { AIConfig } from "./config"
 import { buildRepairPrompt, buildTeachingPrompt } from "./prompt"
 import type { AIProvider, TeachingPlanFailure, TeachingPlanRequest, TeachingPlanResult } from "./provider"
+import { isTransientFailure, MAX_TRANSIENT_RETRIES, TRANSIENT_RETRY_DELAY_MS } from "./retry"
 import { parseTeachingPlanResponse } from "./response-parser"
 import { estimateUsage, usageFromMeasuredTokens, type UsageEstimate } from "./usage-tracker"
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
 
 /**
  * The Gemini-backed `AIProvider`.
@@ -71,7 +76,7 @@ export class GeminiProvider implements AIProvider {
     let prompt = buildTeachingPrompt(question, context)
 
     for (let attempt = 0; attempt <= config.maxRetries; attempt++) {
-      const callResult = await this.callGemini({
+      const callResult = await this.callGeminiWithTransientRetry({
         apiKey,
         model: config.gemini.model,
         prompt,
@@ -97,6 +102,28 @@ export class GeminiProvider implements AIProvider {
     }
 
     return { ok: false, failure: { kind: "invalid_output", detail: "exhausted retries" } }
+  }
+
+  /**
+   * Retries the raw network call itself (separate from the JSON-repair
+   * retry above) on a flaky connection or a transient provider error
+   * (e.g. Gemini's own "high demand" 503) - exactly the cases a second
+   * attempt is actually likely to fix, bounded so a persistently broken
+   * network still fails fast rather than hanging indefinitely.
+   */
+  private async callGeminiWithTransientRetry(
+    args: Parameters<GeminiProvider["callGemini"]>[0]
+  ): Promise<GeminiCallResult> {
+    let lastResult: GeminiCallResult = await this.callGemini(args)
+
+    for (let attempt = 0; attempt < MAX_TRANSIENT_RETRIES && !lastResult.ok; attempt++) {
+      if (!isTransientFailure(lastResult.failure)) return lastResult
+      if (args.signal?.aborted) return lastResult
+      await delay(TRANSIENT_RETRY_DELAY_MS)
+      lastResult = await this.callGemini(args)
+    }
+
+    return lastResult
   }
 
   private async callGemini(args: {

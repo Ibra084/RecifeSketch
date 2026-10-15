@@ -170,7 +170,11 @@ export function DrawingHarness() {
   return (
     <div className="flex h-dvh w-full">
       <div className="relative flex-1">
-        <Tldraw persistenceKey="recife-sketch-drawing-harness" onMount={handleMount} />
+        <Tldraw
+          persistenceKey="recife-sketch-drawing-harness"
+          onMount={handleMount}
+          licenseKey={process.env.NEXT_PUBLIC_TLDRAW_LICENSE_KEY}
+        />
       </div>
 
       <div className="flex w-[420px] shrink-0 flex-col border-l border-border-subtle bg-surface">

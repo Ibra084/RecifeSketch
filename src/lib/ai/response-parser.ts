@@ -40,10 +40,10 @@ export function parseTeachingPlanResponse(raw: string): TeachingPlanParseResult 
 
   const parsed = teachingPlanSchema.safeParse(json)
   if (!parsed.success) {
-    return {
-      ok: false,
-      error: { kind: "schema", message: parsed.error.issues.map((issue) => issue.message).join("; ") },
-    }
+    const message = parsed.error.issues
+      .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
+      .join("; ")
+    return { ok: false, error: { kind: "schema", message } }
   }
 
   if (countTotalActions(parsed.data) > MAX_TOTAL_ACTIONS) {

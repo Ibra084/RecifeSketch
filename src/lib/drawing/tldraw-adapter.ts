@@ -19,6 +19,7 @@
 import { createShapeId, toRichText, type Editor, type TLArrowShape, type TLShapeId } from "tldraw"
 import type { DrawingAdapter, HighlightOptions, ObjectBounds } from "./adapter"
 import { findContainingId } from "./geometry"
+import { sanitizeMathNotation } from "./math-notation"
 import { computeNiceTicks, mapPointsToCanvas, sampleFunction } from "./plotting"
 import { buildDrawSegments, buildLinePointsRecord } from "./tldraw-shape-builders"
 import type {
@@ -218,7 +219,8 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
   }
 
   writeEquation(action: WriteEquationAction): void {
-    const tlId = this.track(action.id, "text", "equation", action.expression)
+    const expression = sanitizeMathNotation(action.expression)
+    const tlId = this.track(action.id, "text", "equation", expression)
     this.editor.createShapes([
       {
         id: tlId,
@@ -226,7 +228,7 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
         x: action.position.x,
         y: action.position.y,
         props: {
-          richText: toRichText(action.expression),
+          richText: toRichText(expression),
           color: action.color ?? "black",
           size: action.size ?? "m",
           font: "mono",
@@ -396,8 +398,9 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
     if (tracked.kind === "geo" && patch.w !== undefined) props.w = patch.w
     if (tracked.kind === "geo" && patch.h !== undefined) props.h = patch.h
     if (tracked.kind === "text" && patch.text !== undefined) {
-      props.richText = toRichText(patch.text)
-      tracked.label = patch.text
+      const text = sanitizeMathNotation(patch.text)
+      props.richText = toRichText(text)
+      tracked.label = text
     }
 
     const top: { id: TLShapeId; type: TrackedKind; opacity?: number; props?: typeof props } = {

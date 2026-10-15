@@ -32,6 +32,7 @@ import type {
   WriteEquationAction,
   WriteTextAction,
 } from "../protocol"
+import { sanitizeMathNotation } from "../math-notation"
 import { mapPointsToCanvas, sampleFunction } from "../plotting"
 import { buildDrawSegments, buildLinePointsRecord, type PlainPoint } from "../tldraw-shape-builders"
 import type { AnimationContext, ShapeAnimator } from "./animator"
@@ -171,7 +172,7 @@ export class TldrawShapeAnimator implements ShapeAnimator {
   }
 
   async revealEquation(action: WriteEquationAction, ctx: AnimationContext): Promise<void> {
-    await this.typeText(createShapeId(action.id), action.expression, ctx)
+    await this.typeText(createShapeId(action.id), sanitizeMathNotation(action.expression), ctx)
   }
 
   private async fadeIn(

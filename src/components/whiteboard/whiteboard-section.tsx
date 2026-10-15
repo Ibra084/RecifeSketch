@@ -74,6 +74,7 @@ export function WhiteboardSection({ onEditorMount }: WhiteboardSectionProps) {
         persistenceKey="recife-sketch-board"
         components={HIDDEN_COMPONENTS}
         onMount={handleMount}
+        licenseKey={process.env.NEXT_PUBLIC_TLDRAW_LICENSE_KEY}
       />
       <WhiteboardEmptyHint editor={editor} />
       <WhiteboardToolbar editor={editor} />

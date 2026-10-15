@@ -40,6 +40,11 @@ describe("buildTeachingPrompt", () => {
     expect(prompt).toMatch(/image/)
   })
 
+  it("forbids LaTeX-style equation markup", () => {
+    const prompt = buildTeachingPrompt("Explain Newton's second law")
+    expect(prompt).toMatch(/NEVER LaTeX/)
+  })
+
   it("forbids hand-drawing a precise-looking graph outside plot_function", () => {
     const prompt = buildTeachingPrompt("Explain velocity").toLowerCase()
     expect(prompt).toMatch(/never hand-draw axes/)

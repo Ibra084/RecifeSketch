@@ -51,11 +51,18 @@ Available action types (every action is one JSON object with a "type" field):
 - draw_arrow { id, start: {x,y}, end: {x,y}, color?, dash?, size?, arrowheadStart?, arrowheadEnd?, label?, bend? }
 - write_text { id, position: {x,y}, text, color?, size?, w? }
 - write_equation { id, position: {x,y}, expression, color?, size? }
-    expression is plain math notation, e.g. "a^2 + b^2 = c^2".
+    expression is rendered as plain text with NO markup engine behind it.
+    Use plain characters and real Unicode symbols only, e.g. "a^2 + b^2 = c^2"
+    or "F = m × a" or "π r^2" - NEVER LaTeX/backslash commands like "\times",
+    "\frac{}{}" or "\sqrt{}", which would show up as literal backslashes.
 - plot_function { id, expression, domain: [min,max], samples?, position?, scale?, color?, size?, showAxes? }
     expression is a function of x, e.g. "sin(x)" or "x^2 - 3*x + 2". This is
     the ONLY way to draw a precise mathematical graph - never approximate a
-    graph with create_freehand_path or create_polygon.
+    graph with create_freehand_path or create_polygon. If you overlay
+    several curves on the SAME shared axes (same position and scale, to
+    compare them), set showAxes:false on every one after the first -
+    otherwise each one redraws its own full set of axis lines and tick
+    labels on top of the others.
 - move_object { id, position: {x,y} } - moves an object created earlier in THIS plan.
 - update_object { id, patch: { color?, fill?, dash?, size?, text?, w?, h?, opacity? } }
 - delete_object { id }

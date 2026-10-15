@@ -54,6 +54,18 @@ describe("parseTeachingPlanResponse", () => {
     }
   })
 
+  it("includes the exact field path in the schema error, so a repair retry knows what to fix", () => {
+    const plan = JSON.parse(validPlanJson())
+    // A real failure seen in live testing: the model sent the wrong type
+    // for a field deep inside an action.
+    plan.steps[0].actions[0].x = "not-a-number"
+    const result = parseTeachingPlanResponse(JSON.stringify(plan))
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.error.message).toContain("steps.0.actions.0.x")
+    }
+  })
+
   it("rejects a plan whose total action count exceeds the cap", () => {
     // Spread actions across many steps (20/step, under the per-step and
     // per-plan schema caps individually) so the total-action cap is the

@@ -7,7 +7,7 @@ describe("loadAIConfig", () => {
 
     expect(config.provider).toBe("gemini")
     expect(config.gemini.apiKey).toBeNull()
-    expect(config.gemini.model).toBe("gemini-3.8-flash")
+    expect(config.gemini.model).toBe("gemini-3.1-flash-lite")
     expect(config.maxOutputTokens).toBeGreaterThan(0)
     expect(config.maxRetries).toBeGreaterThanOrEqual(0)
     expect(config.requestTimeoutMs).toBeGreaterThan(0)

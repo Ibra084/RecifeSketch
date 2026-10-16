@@ -59,10 +59,20 @@ as a separate app from `RecifeAI/`.
 
 ## Out of scope
 
-Authentication, dashboards, flashcards, payments, quizzes, analytics. Do
-not add these even incidentally while building whiteboard/chat/AI
-features — if a task seems to require one of these, stop and raise it
-rather than building it in.
+Flashcards, payments, quizzes, analytics. Do not add these even
+incidentally while building whiteboard/chat/AI features — if a task seems
+to require one of these, stop and raise it rather than building it in.
+
+Brought into scope by the owner (2026-10-17): **authentication** (Supabase
+Auth — personal-email accounts plus administrator-issued student alias
+accounts, school email domains blocked server-side) and a **minimal
+student dashboard** (start / list / rename / delete saved whiteboards,
+account settings, sign out). Keep both minimal: no social features,
+and collect no personal data beyond what sign-in needs (no real names).
+The owner also approved (2026-10-17) a minimal **admin page** (`/admin`) for
+managing student alias accounts only (create, reset password, delete), visible
+only to accounts with the server-set `app_metadata.role = "admin"` flag. Keep
+it to alias management; no analytics or student-content access.
 
 ## Tech stack (required)
 

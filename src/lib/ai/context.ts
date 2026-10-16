@@ -1,5 +1,5 @@
 import { z } from "zod"
-import { coordinateSchema, dimensionSchema, objectIdSchema } from "../drawing/protocol"
+import { coordinateSchema, dimensionSchema, objectIdSchema, regionSchema } from "../drawing/protocol"
 
 /**
  * The compact, bounded context a client sends with each follow-up
@@ -41,6 +41,11 @@ export type PriorTurn = z.infer<typeof priorTurnSchema>
 export const tutorContextSchema = z.strictObject({
   objects: z.array(objectSummarySchema).max(MAX_CONTEXT_OBJECTS),
   history: z.array(priorTurnSchema).max(MAX_HISTORY_TURNS),
+  layout: z.strictObject({
+    viewport: regionSchema,
+    occupied: z.array(regionSchema).max(120),
+    freshArea: regionSchema,
+  }).optional(),
 })
 export type TutorContext = z.infer<typeof tutorContextSchema>
 
@@ -49,9 +54,13 @@ export function existingIdsFrom(context: TutorContext | undefined): string[] {
 }
 
 export function formatContextForPrompt(context: TutorContext | undefined): string {
-  if (!context || (context.objects.length === 0 && context.history.length === 0)) return ""
+  if (!context) return ""
 
   const parts: string[] = []
+  if (context.layout) {
+    parts.push(`Board layout in page coordinates: ${JSON.stringify(context.layout)}`,
+      "Occupied rectangles include student work, images, labels and earlier drawings. Do not cover them. For an unrelated NEW topic, use freshArea, not the origin. For an edit, retain the existing object's position and id. Fit the NEW lesson into a readable area and focus_camera on that lesson only, never the entire accumulated board. Keep graph height around 400–550 units: choose x/y scales independently from the actual function range. Leave space beside the lesson for commentary.")
+  }
 
   if (context.history.length > 0) {
     parts.push("Recent conversation on this whiteboard (most recent last):")
@@ -66,7 +75,7 @@ export function formatContextForPrompt(context: TutorContext | undefined): strin
       "Objects already on the whiteboard from earlier turns. To edit, move, highlight or " +
         "delete one of these, reuse its EXACT existing id below - never invent a new id for " +
         "the same object. Give any brand-new object a brand-new id that is not in this list. " +
-        "This is a follow-up: continue and extend the existing diagram, and only remove " +
+        "When the question is a follow-up, continue and extend the existing diagram, and only remove " +
         "something from it if it is genuinely obsolete for answering this question."
     )
     for (const object of context.objects) {

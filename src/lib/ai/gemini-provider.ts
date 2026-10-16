@@ -76,6 +76,9 @@ export class GeminiProvider implements AIProvider {
 
     const { question, context } = request
     let prompt = buildTeachingPrompt(question, context) + "\n\n" + sourcePrompt(request.source)
+    // One deadline for the whole request: repair and transient retries share it,
+    // so a struggling provider can't keep a student waiting for minutes.
+    const deadline = Date.now() + config.requestTimeoutMs
 
     for (let attempt = 0; attempt <= config.maxRetries; attempt++) {
       const callResult = await this.callGeminiWithTransientRetry({
@@ -83,7 +86,7 @@ export class GeminiProvider implements AIProvider {
         model: config.gemini.model,
         prompt,
         maxOutputTokens: config.maxOutputTokens,
-        timeoutMs: config.requestTimeoutMs,
+        deadline,
         signal,
         image: request.source?.image,
       })
@@ -122,9 +125,16 @@ export class GeminiProvider implements AIProvider {
 
     for (let attempt = 0; attempt < MAX_TRANSIENT_RETRIES && !lastResult.ok; attempt++) {
       if (!isTransientFailure(lastResult.failure)) return lastResult
-      if (args.signal?.aborted) return lastResult
+      if (args.signal?.aborted || Date.now() + TRANSIENT_RETRY_DELAY_MS >= args.deadline) return lastResult
       await delay(TRANSIENT_RETRY_DELAY_MS)
-      lastResult = await this.callGemini(args)
+      const fallback = this.options.config.gemini.fallbackModel
+      const overloaded = lastResult.failure.kind === "provider_error" &&
+        [500, 502, 503, 504].includes(lastResult.failure.httpStatus ?? 0)
+      if (overloaded && fallback) console.info(`[tutor] Switching from ${args.model} to ${fallback} after provider overload`)
+      lastResult = await this.callGemini({
+        ...args,
+        model: overloaded && fallback ? fallback : args.model,
+      })
     }
 
     return lastResult
@@ -135,21 +145,24 @@ export class GeminiProvider implements AIProvider {
     model: string
     prompt: string
     maxOutputTokens: number
-    timeoutMs: number
+    /** Epoch ms by which this call must finish (shared across retries). */
+    deadline: number
     signal?: AbortSignal
     image?: QuestionSource["image"]
   }): Promise<GeminiCallResult> {
+    const remainingMs = args.deadline - Date.now()
+    if (remainingMs <= 0) return { ok: false, failure: { kind: "timeout" } }
     const fetchImpl = this.options.fetchImpl ?? fetch
     const controller = new AbortController()
-    const timeoutHandle = setTimeout(() => controller.abort(), args.timeoutMs)
+    const timeoutHandle = setTimeout(() => controller.abort(), remainingMs)
     const onExternalAbort = () => controller.abort()
     args.signal?.addEventListener("abort", onExternalAbort)
 
     try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(args.model)}:generateContent?key=${encodeURIComponent(args.apiKey)}`
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(args.model)}:generateContent`
       const response = await fetchImpl(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "x-goog-api-key": args.apiKey },
         body: JSON.stringify({
           contents: [{ role: "user", parts: [
             { text: args.prompt },
@@ -176,6 +189,7 @@ export class GeminiProvider implements AIProvider {
           ok: false,
           failure: {
             kind: "provider_error",
+            httpStatus: response.status,
             detail: `Gemini responded ${response.status}: ${bodyText.slice(0, 300)}`,
           },
         }
@@ -199,7 +213,9 @@ export class GeminiProvider implements AIProvider {
         ok: false,
         failure: {
           kind: "provider_error",
-          detail: error instanceof Error ? error.message : String(error),
+          detail: error instanceof Error
+            ? `${error.message}${error.cause && typeof error.cause === "object" && "code" in error.cause ? ` (${String(error.cause.code)})` : ""}`
+            : String(error),
         },
       }
     } finally {

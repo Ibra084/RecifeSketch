@@ -32,6 +32,9 @@ export const dimensionSchema = z
   .min(DIMENSION_MIN, `dimension must be >= ${DIMENSION_MIN}`)
   .max(DIMENSION_LIMIT, `dimension must be <= ${DIMENSION_LIMIT}`)
 
+/** Degrees, anticlockwise as in maths: 30 tilts a box up a slope rising to the right at 30°. */
+export const rotationSchema = z.number().finite().min(-360).max(360)
+
 export const pointSchema = z.strictObject({
   x: coordinateSchema,
   y: coordinateSchema,
@@ -139,6 +142,8 @@ export const createShapeActionSchema = z.strictObject({
   dash: dashStyleSchema.optional(),
   size: sizeStyleSchema.optional(),
   label: textSchema.optional(),
+  /** Turns the shape about its centre; x, y, w, h describe it before turning. */
+  rotation: rotationSchema.optional(),
 })
 
 export const createFreehandPathActionSchema = z.strictObject({
@@ -187,6 +192,25 @@ export const drawArrowActionSchema = z
     (action) => Math.hypot(action.end.x - action.start.x, action.end.y - action.start.y) >= 4,
     "an arrow needs a real span between start and end - it can't point at nothing"
   )
+
+/**
+ * A force (or any direction vector) acting on an existing object. The engine
+ * computes the geometry: the arrow starts exactly on the object's outline
+ * (turned with it, if it is turned) and points at `angle` - degrees,
+ * anticlockwise from the positive x direction, as in maths (0 right, 90 up,
+ * 180 left, 270 down). The model never has to work out trig for it.
+ */
+export const drawForceActionSchema = z.strictObject({
+  type: z.literal("draw_force"),
+  id: objectIdSchema,
+  on: objectIdSchema,
+  angle: z.number().finite().min(-360).max(720),
+  length: z.number().finite().min(20).max(600).optional(),
+  label: textSchema.optional(),
+  color: colorSchema.optional(),
+  dash: dashStyleSchema.optional(),
+  size: sizeStyleSchema.optional(),
+})
 
 export const drawCurveActionSchema = z.strictObject({
   type: z.literal("draw_curve"),
@@ -272,6 +296,7 @@ export const updateObjectPatchSchema = z.strictObject({
   w: dimensionSchema.optional(),
   h: dimensionSchema.optional(),
   opacity: z.number().min(0).max(1).optional(),
+  rotation: rotationSchema.optional(),
 })
 
 export const updateObjectActionSchema = z.strictObject({
@@ -319,6 +344,7 @@ export const drawingActionSchema = z.discriminatedUnion("type", [
   createPolygonActionSchema,
   drawLineActionSchema,
   drawArrowActionSchema,
+  drawForceActionSchema,
   drawCurveActionSchema,
   drawRepeatedCurveActionSchema,
   writeTextActionSchema,
@@ -341,6 +367,7 @@ export type CreateFreehandPathAction = z.infer<typeof createFreehandPathActionSc
 export type CreatePolygonAction = z.infer<typeof createPolygonActionSchema>
 export type DrawLineAction = z.infer<typeof drawLineActionSchema>
 export type DrawArrowAction = z.infer<typeof drawArrowActionSchema>
+export type DrawForceAction = z.infer<typeof drawForceActionSchema>
 export type DrawCurveAction = z.infer<typeof drawCurveActionSchema>
 export type DrawRepeatedCurveAction = z.infer<typeof drawRepeatedCurveActionSchema>
 export type WriteTextAction = z.infer<typeof writeTextActionSchema>
@@ -368,6 +395,7 @@ export const CREATING_ACTION_TYPES = [
   "create_polygon",
   "draw_line",
   "draw_arrow",
+  "draw_force",
   "draw_curve",
   "draw_repeated_curve",
   "write_text",

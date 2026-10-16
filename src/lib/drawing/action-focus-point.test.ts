@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { actionFocusPoint } from "./action-focus-point"
+import { actionFocusPoint, actionFocusRect } from "./action-focus-point"
 import type { DrawingAction } from "./protocol"
 
 describe("actionFocusPoint", () => {
@@ -46,5 +46,21 @@ describe("actionFocusPoint", () => {
     expect(
       actionFocusPoint({ type: "focus_camera", target: { kind: "point", position: { x: 1, y: 1 } } })
     ).toBeNull()
+  })
+})
+
+describe("actionFocusRect", () => {
+  it("returns a created shape's full declared bounds, so a comment can avoid it before it is drawn", () => {
+    expect(actionFocusRect({ type: "create_shape", id: "a", shape: "rectangle", x: 10, y: 20, w: 100, h: 50 })).toEqual({ x: 10, y: 20, w: 100, h: 50 })
+  })
+
+  it("returns the bounding box of point-based actions", () => {
+    expect(actionFocusRect({ type: "create_freehand_path", id: "a", points: [{ x: 5, y: 40 }, { x: 105, y: 0 }, { x: 50, y: 20 }] })).toEqual({ x: 5, y: 0, w: 100, h: 40 })
+    expect(actionFocusRect({ type: "draw_arrow", id: "a", start: { x: 100, y: 100 }, end: { x: 0, y: 50 } })).toEqual({ x: 0, y: 50, w: 100, h: 50 })
+  })
+
+  it("falls back to a 1x1 rect at the focus point when the extent is unknown (e.g. text)", () => {
+    expect(actionFocusRect({ type: "write_text", id: "a", position: { x: 10, y: 20 }, text: "hi" })).toEqual({ x: 10, y: 20, w: 1, h: 1 })
+    expect(actionFocusRect({ type: "highlight_object", id: "a" })).toBeNull()
   })
 })

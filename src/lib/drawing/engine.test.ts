@@ -250,6 +250,30 @@ describe("DrawingEngine", () => {
   })
 })
 
+describe("DrawingEngine authoring scope", () => {
+  it("runs every action inside the adapter's authored() scope, so AI-made shapes can be told apart from student work", () => {
+    const adapter = new FakeDrawingAdapter()
+    let depth = 0
+    const depthAtCreate: number[] = []
+    adapter.authored = <T,>(fn: () => T): T => {
+      depth++
+      try { return fn() } finally { depth-- }
+    }
+    const original = adapter.createShape.bind(adapter)
+    adapter.createShape = (action) => { depthAtCreate.push(depth); original(action) }
+
+    new DrawingEngine(adapter).run([createShapeAction("a"), createShapeAction("b")])
+
+    expect(depthAtCreate).toEqual([1, 1])
+    expect(depth).toBe(0)
+  })
+
+  it("still works with an adapter that has no authored() scope", () => {
+    const result = new DrawingEngine(new FakeDrawingAdapter()).run([createShapeAction("a")])
+    expect(result.ok).toBe(true)
+  })
+})
+
 describe("runDrawingProgram", () => {
   it("returns a validation-stage failure for malformed input without touching the adapter", () => {
     const adapter = new FakeDrawingAdapter()
@@ -271,5 +295,30 @@ describe("runDrawingProgram", () => {
     expect(result.ok).toBe(true)
     expect(result.stage).toBe("execution")
     expect(adapter.calls).toHaveLength(1)
+  })
+})
+
+describe("draw_force", () => {
+  it("becomes an arrow leaving its object's outline at the given maths angle", () => {
+    const adapter = new FakeDrawingAdapter()
+    const result = new DrawingEngine(adapter).run([
+      { type: "create_shape", id: "block", shape: "rectangle", x: 0, y: 0, w: 80, h: 40 },
+      { type: "draw_force", id: "weight", on: "block", angle: 270, length: 60, label: "$mg$" },
+    ])
+    expect(result.ok).toBe(true)
+    const arrow = result.executed[1].action
+    expect(arrow).toMatchObject({ type: "draw_arrow", id: "weight", label: "$mg$" })
+    if (arrow.type !== "draw_arrow") throw new Error("expected an arrow")
+    expect(arrow.start.x).toBeCloseTo(40)
+    expect(arrow.start.y).toBeCloseTo(40) // the block's bottom edge
+    expect(arrow.end.y).toBeCloseTo(100)
+  })
+
+  it("explains that the object must be drawn first", () => {
+    const result = new DrawingEngine(new FakeDrawingAdapter()).run([
+      { type: "draw_force", id: "f", on: "missing", angle: 0 },
+    ])
+    expect(result.ok).toBe(false)
+    expect(result.error?.message).toMatch(/draw the object first/)
   })
 })

@@ -14,6 +14,17 @@ function sampleObject(overrides: Partial<ObjectSummary> = {}): ObjectSummary {
 }
 
 describe("tutorContextSchema", () => {
+  it("provides occupied student areas and a fresh topic area even without AI history", () => {
+    const context = tutorContextSchema.parse({ objects: [], history: [], layout: {
+      viewport: { x: 0, y: 0, w: 1000, h: 700 },
+      occupied: [{ x: 0, y: 0, w: 600, h: 400 }],
+      freshArea: { x: 760, y: 0, w: 1000, h: 700 },
+    } })
+    const prompt = formatContextForPrompt(context)
+    expect(prompt).toContain('"x":760')
+    expect(prompt).toContain("student work")
+    expect(prompt).toContain("never the entire accumulated board")
+  })
   it("accepts an empty context", () => {
     expect(tutorContextSchema.safeParse({ objects: [], history: [] }).success).toBe(true)
   })

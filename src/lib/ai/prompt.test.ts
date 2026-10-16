@@ -50,9 +50,39 @@ describe("buildTeachingPrompt", () => {
     expect(prompt).toMatch(/gap or dead end/)
   })
 
-  it("forbids LaTeX-style equation markup", () => {
+  it("tells the model each step's commentary is spoken beside that step's first object", () => {
+    const prompt = buildTeachingPrompt("Explain levers").toLowerCase()
+    expect(prompt).toMatch(/speech\s+bubble while that step draws/)
+    expect(prompt).toMatch(/first action/)
+  })
+
+  it("requires LaTeX for equations and $...$ maths inside prose and commentary", () => {
     const prompt = buildTeachingPrompt("Explain Newton's second law")
-    expect(prompt).toMatch(/NEVER LaTeX/)
+    expect(prompt).toMatch(/expression is ONE LaTeX expression/)
+    expect(prompt).toContain("\\frac{F_{\\text{net}}}{m}")
+    expect(prompt).toMatch(/MUST be LaTeX in \$\.\.\.\$/)
+    expect(prompt).toMatch(/Commentary is prose: put any maths in it in\s+LaTeX/)
+  })
+
+  it("colours each part of a multi-part question differently, with bold part headings", () => {
+    const prompt = buildTeachingPrompt("Question 9 (a) (b) (c)")
+    expect(prompt).toMatch(/part \(a\) blue, \(b\) violet, \(c\) green, \(d\) orange, \(e\) red/)
+    expect(prompt).toContain('"**Part (a)** Use')
+  })
+
+  it("explains rotation and how to draw forces on an inclined plane with real trigonometry", () => {
+    const prompt = buildTeachingPrompt("A block on a 30 degree slope")
+    expect(prompt).toMatch(/rotation is in degrees, anticlockwise/)
+    expect(prompt).toMatch(/page y points DOWN/)
+    expect(prompt).toContain("(cos θ, -sin θ)")
+    expect(prompt).toMatch(/normal reaction θ \+ 90, weight 270/)
+  })
+
+  it("requires draw_force for every force, with every force shown and objects named by their label", () => {
+    const prompt = buildTeachingPrompt("Draw the forces on the block")
+    expect(prompt).toMatch(/ALWAYS use draw_force for a force on an object/)
+    expect(prompt).toMatch(/shows EVERY force on each object/)
+    expect(prompt).toMatch(/never a separate write_text\s+beside it/)
   })
 
   it("forbids hand-drawing a precise-looking graph outside plot_function", () => {

@@ -13,6 +13,7 @@ export interface AIConfig {
   gemini: {
     apiKey: string | null
     model: string
+    fallbackModel?: string | null
     thinkingLevel?: "minimal" | "low" | "high"
   }
   maxOutputTokens: number
@@ -68,6 +69,7 @@ export function loadAIConfig(env: Record<string, string | undefined> = process.e
     gemini: {
       apiKey: nonEmpty(env.GEMINI_API_KEY),
       model: nonEmpty(env.GEMINI_MODEL) ?? DEFAULTS.geminiModel,
+      fallbackModel: nonEmpty(env.GEMINI_FALLBACK_MODEL),
       thinkingLevel: env.GEMINI_THINKING_LEVEL === "high" ? "high" : env.GEMINI_THINKING_LEVEL === "minimal" ? "minimal" : "low",
     },
     maxOutputTokens: parsePositiveInt(env.AI_MAX_OUTPUT_TOKENS, DEFAULTS.maxOutputTokens),

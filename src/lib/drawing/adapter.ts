@@ -22,6 +22,7 @@ import type {
   WriteEquationAction,
   WriteTextAction,
 } from "./protocol"
+import type { ObjectFrame } from "./force-geometry"
 
 export interface ObjectBounds {
   x: number
@@ -58,4 +59,13 @@ export interface DrawingAdapter {
 
   /** Bounds of a previously-created object, if the adapter can report them. */
   getObjectBounds(id: string): ObjectBounds | undefined
+
+  /** Optional: centre, unturned size, turn and outline of an object, for exact force arrows. Falls back to its bounds. */
+  getObjectFrame?(id: string): ObjectFrame | undefined
+
+  /**
+   * Optional: run `fn` as AI authoring, so anything it creates can be
+   * marked as the tutor's rather than the student's.
+   */
+  authored?<T>(fn: () => T): T
 }

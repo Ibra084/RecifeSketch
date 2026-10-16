@@ -1,96 +1,23 @@
 "use client"
 
 import dynamic from "next/dynamic"
-import { useCallback, useEffect, useRef, useState } from "react"
-import { useValue, type Editor } from "tldraw"
-import { MessageSquare, PanelRightClose, PanelRightOpen } from "lucide-react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { Box, useValue, type Editor, type TLShapeId } from "tldraw"
 import { RecifeWordmark } from "@/components/brand/recife-wordmark"
-import { ChatPanelContent } from "@/components/chat/chat-panel-content"
-import { useTutorChat, type WhiteboardController } from "@/components/chat/use-tutor-chat"
-import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet"
+import { AiCompanion, type CompanionState, type TutorSpeech } from "@/components/companion/ai-companion"
+import { readQuestionImageBlob } from "@/components/companion/question-image"
+import { useCompanionOrb } from "@/components/companion/use-companion-orb"
+import { useTutor, type WhiteboardController } from "@/components/companion/use-tutor"
+import { actionFocusRect } from "@/lib/drawing/action-focus-point"
+import { focusedStudentWork } from "@/lib/drawing/authorship"
 import { DrawingEngine } from "@/lib/drawing/engine"
-import { TldrawDrawingAdapter } from "@/lib/drawing/tldraw-adapter"
 import { DrawingPlayer } from "@/lib/drawing/playback/player"
 import { TldrawShapeAnimator } from "@/lib/drawing/playback/tldraw-animator"
-import { cn, prefersReducedMotion } from "@/lib/utils"
-import { placeQuestionSheet, findUnattachedQuestionImage, markQuestionSourceAttached } from "@/lib/drawing/question-sheet"
-import { readQuestionImageBlob } from "@/components/chat/question-image"
-import { actionFocusPoint } from "@/lib/drawing/action-focus-point"
 import type { DrawingSequence } from "@/lib/drawing/playback/types"
-
-interface CommentPin {
-  id: string
-  /** Page-space, not screen-space, so it stays correctly placed as the camera pans/zooms. */
-  point: { x: number; y: number }
-  label: string
-}
-
-/**
- * Every step the AI draws leaves behind a small pin at roughly where it
- * was drawing, carrying that step's commentary - a persistent, spatial
- * index into the lesson, not a toast that flashes and is gone. The most
- * recent one opens automatically as it's drawn (the "watch it happen"
- * moment); every pin, old or new, stays on the board and can be tapped
- * open again at any time. The full commentary still goes to chat too, as
- * the linear reviewable log - this is a spatial complement, not a
- * replacement for it.
- */
-function CommentPinsOverlay({
-  editor,
-  pins,
-  expandedId,
-  onToggle,
-}: {
-  editor: Editor | null
-  pins: CommentPin[]
-  expandedId: string | null
-  onToggle: (id: string) => void
-}) {
-  // Re-render whenever the camera moves, so every pin's screen position
-  // (recomputed below, fresh from its stable page point) stays correct.
-  useValue("camera", () => editor?.getCamera(), [editor])
-
-  if (!editor || pins.length === 0) return null
-
-  return (
-    <div className="pointer-events-none absolute inset-0 z-30 overflow-hidden">
-      {pins.map((pin) => {
-        const screen = editor.pageToScreen(pin.point)
-        const isOpen = pin.id === expandedId
-        return (
-          <div
-            key={pin.id}
-            className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2"
-            style={{ left: screen.x, top: screen.y }}
-          >
-            <div className="flex flex-col items-center">
-              <button
-                type="button"
-                onClick={() => onToggle(pin.id)}
-                aria-expanded={isOpen}
-                aria-label={isOpen ? "Hide this step's note" : "Show this step's note"}
-                className={cn(
-                  "tap-target pointer-events-auto flex items-center justify-center rounded-full transition-colors",
-                  isOpen ? "bg-accent" : "bg-accent/60 hover:bg-accent"
-                )}
-              >
-                <span className="h-3 w-3 rounded-full bg-white" />
-              </button>
-              {isOpen && (
-                <div
-                  className="pointer-events-auto mt-2 max-w-[240px] rounded-xl border border-border-subtle bg-surface px-3 py-2 text-[12px] leading-relaxed text-ink"
-                  style={{ boxShadow: "var(--shadow-popover)" }}
-                >
-                  {pin.label}
-                </div>
-              )}
-            </div>
-          </div>
-        )
-      })}
-    </div>
-  )
-}
+import { findUnattachedQuestionImage, markQuestionSourceAttached, placeQuestionSheet } from "@/lib/drawing/question-sheet"
+import { TldrawDrawingAdapter } from "@/lib/drawing/tldraw-adapter"
+import { pageRect, projectRect, type PageRect, type ViewportRect } from "@/lib/overlay/coordinates"
+import { prefersReducedMotion } from "@/lib/utils"
 
 // tldraw touches browser-only APIs (IndexedDB, window) during setup, so it
 // must never render on the server.
@@ -106,45 +33,122 @@ const WhiteboardSection = dynamic(
   }
 )
 
-export function AppShell() {
-  const [isChatCollapsed, setIsChatCollapsed] = useState(false)
-  const [isMobileChatOpen, setIsMobileChatOpen] = useState(false)
+/** How long the orb lingers near the last explanation before drifting home. */
+const RETURN_HOME_DELAY_MS = 2500
+const SPEAKING_PULSE_MS = 1800
+const SPEECH_FADE_MS = 300
 
+/**
+ * The lesson being explained. The student clicks through it: each step's
+ * explanation shows while that step draws, and the next step only starts
+ * when they press Next. Back re-reads earlier explanations.
+ */
+interface Lesson {
+  id: number
+  steps: { text: string; avoid: ViewportRect | null }[]
+  totalSteps: number
+  /** Which explanation is showing (Back can move it behind the latest step). */
+  view: number
+  /** Playback is holding until the student presses Next. */
+  waiting: boolean
+  /** Playback has ended (completed, stopped or failed). */
+  finished: boolean
+  /** The speech bubble is showing; Done closes it (the step list stays in the orb panel). */
+  open: boolean
+  leaving: boolean
+}
+
+type StepHandler = (sequence: DrawingSequence, stepIndex: number, text: string | undefined) => void
+
+export function AppShell() {
   // The engine and animator live for the whiteboard's whole mounted
-  // lifetime (not recreated per chat message), so object ids stay
-  // addressable and the board keeps persisting across turns - a fresh
-  // DrawingPlayer is created per `play()` call, same as the dev harness.
+  // lifetime (not recreated per question), so object ids stay addressable
+  // across turns - a fresh DrawingPlayer is created per `play()` call.
   const engineRef = useRef<DrawingEngine | null>(null)
   const editorRef = useRef<Editor | null>(null)
-  // Mirrors editorRef, but as state: CommentPinsOverlay needs the editor
-  // instance to render with, and refs can't be read during render.
-  const [mountedEditor, setMountedEditor] = useState<Editor | null>(null)
   const adapterRef = useRef<TldrawDrawingAdapter | null>(null)
   const animatorRef = useRef<TldrawShapeAnimator | null>(null)
   const playerRef = useRef<DrawingPlayer | null>(null)
+  const stepHandlerRef = useRef<StepHandler | null>(null)
+  const endTurnRef = useRef<(() => void) | null>(null)
+  // Mirrors editorRef as state: overlays need the editor to render, and refs can't be read during render.
+  const [mountedEditor, setMountedEditor] = useState<Editor | null>(null)
 
-  const [pins, setPins] = useState<CommentPin[]>([])
-  const [expandedPinId, setExpandedPinId] = useState<string | null>(null)
-  const pinCounterRef = useRef(0)
+  const viewportW = useValue("viewport w", () => mountedEditor?.getViewportScreenBounds().w ?? 0, [mountedEditor])
+  const viewportH = useValue("viewport h", () => mountedEditor?.getViewportScreenBounds().h ?? 0, [mountedEditor])
+  const viewport = useMemo(() => (viewportW > 0 ? { w: viewportW, h: viewportH } : null), [viewportW, viewportH])
 
-  const togglePin = useCallback((id: string) => {
-    setExpandedPinId((current) => (current === id ? null : id))
+  const orb = useCompanionOrb(viewport)
+  const [speaking, setSpeaking] = useState(false)
+  const speakingTimerRef = useRef<number | undefined>(undefined)
+  const homeTimerRef = useRef<number | undefined>(undefined)
+
+  const [lesson, setLesson] = useState<Lesson | null>(null)
+  const lessonIdRef = useRef(0)
+  /** Releases playback held between steps (set while waiting for Next). */
+  const releaseStepRef = useRef<(() => void) | null>(null)
+  const closeTimerRef = useRef<number | undefined>(undefined)
+  useEffect(() => () => window.clearTimeout(closeTimerRef.current), [])
+
+  const lessonBack = useCallback(() => {
+    setLesson((current) => (current && current.view > 0 ? { ...current, view: current.view - 1 } : current))
   }, [])
-
-  const resolveStepFocusPoint = useCallback((sequence: DrawingSequence, stepIndex: number) => {
-    const step = sequence[stepIndex]
-    const adapter = adapterRef.current
-    if (!step) return null
-    for (const action of step.actions) {
-      const point = actionFocusPoint(action)
-      if (point) return point
-      if ("id" in action && adapter) {
-        const bounds = adapter.getObjectBounds(action.id)
-        if (bounds) return { x: bounds.x + bounds.w / 2, y: bounds.y + bounds.h / 2 }
-      }
+  const lessonNext = useCallback(() => {
+    if (!lesson) return
+    if (lesson.view < lesson.steps.length - 1) {
+      setLesson({ ...lesson, view: lesson.view + 1 })
+    } else if (lesson.waiting) {
+      setLesson({ ...lesson, waiting: false })
+      releaseStepRef.current?.()
+    } else if (lesson.finished) {
+      // Done: fade the bubble out; the steps stay listed in the orb's panel.
+      setLesson({ ...lesson, leaving: true })
+      window.clearTimeout(closeTimerRef.current)
+      const id = lesson.id
+      closeTimerRef.current = window.setTimeout(
+        () => setLesson((current) => (current?.id === id ? { ...current, open: false, leaving: false } : current)),
+        SPEECH_FADE_MS
+      )
     }
-    return null
-  }, [])
+  }, [lesson])
+
+  // Overlays (the orb and its speech) sit above the canvas, so wheel and pinch gestures
+  // over them would otherwise reach the browser and zoom the whole page.
+  // Hand them to the whiteboard instead, so the board pans/zooms as expected.
+  const mainRef = useRef<HTMLElement>(null)
+  useEffect(() => {
+    const main = mainRef.current
+    if (!main || !mountedEditor) return
+    const editor = mountedEditor
+    const fromCanvas = (event: Event) => event.target instanceof Node && editor.getContainer().contains(event.target)
+    function onWheel(event: WheelEvent) {
+      if (fromCanvas(event)) return // tldraw's own handler already ran (or chose to let it scroll)
+      const target = event.target as Element | null
+      // Let text areas (e.g. the question composer) scroll themselves, unless this is a pinch/ctrl zoom.
+      if (!event.ctrlKey && !event.metaKey && target?.closest("textarea, [data-scrollable]")) return
+      event.preventDefault()
+      // tldraw ignores wheel input while unfocused (e.g. after clicking the orb); don't steal DOM focus though.
+      if (!editor.getInstanceState().isFocused) editor.focus({ focusContainer: false })
+      editor.getContainer().querySelector(".tl-canvas")?.dispatchEvent(
+        new WheelEvent("wheel", {
+          deltaX: event.deltaX, deltaY: event.deltaY, deltaZ: event.deltaZ, deltaMode: event.deltaMode,
+          clientX: event.clientX, clientY: event.clientY, screenX: event.screenX, screenY: event.screenY,
+          ctrlKey: event.ctrlKey, metaKey: event.metaKey, shiftKey: event.shiftKey, altKey: event.altKey,
+          bubbles: true, cancelable: true,
+        })
+      )
+    }
+    // Safari's trackpad pinch uses non-standard gesture events; stop them zooming the page.
+    const blockGesture = (event: Event) => { if (!fromCanvas(event)) event.preventDefault() }
+    main.addEventListener("wheel", onWheel, { passive: false })
+    main.addEventListener("gesturestart", blockGesture)
+    main.addEventListener("gesturechange", blockGesture)
+    return () => {
+      main.removeEventListener("wheel", onWheel)
+      main.removeEventListener("gesturestart", blockGesture)
+      main.removeEventListener("gesturechange", blockGesture)
+    }
+  }, [mountedEditor])
 
   const handleEditorMount = useCallback((editor: Editor) => {
     editorRef.current = editor
@@ -157,37 +161,82 @@ export function AppShell() {
   }, [])
   useEffect(() => () => adapterRef.current?.dispose(), [])
 
+  /** The board area a step works on: its first action's object, or the area it is about to cover. */
+  const resolveStepArea = useCallback((sequence: DrawingSequence, stepIndex: number): PageRect | null => {
+    const adapter = adapterRef.current
+    for (const action of sequence[stepIndex]?.actions ?? []) {
+      const removes = action.type === "delete_object" || action.type === "clear_region"
+      const bounds = "id" in action && !removes ? adapter?.getObjectBounds(action.id) : undefined
+      if (bounds) return pageRect(bounds.x, bounds.y, bounds.w, bounds.h)
+      // At step start the shape usually doesn't exist yet: use the area it is about to cover.
+      const rect = actionFocusRect(action)
+      if (rect) return pageRect(rect.x, rect.y, Math.max(1, rect.w), Math.max(1, rect.h))
+    }
+    return null
+  }, [])
+
+  // Latest-closure handlers for the (stable) board controller to call into.
+  useEffect(() => {
+    stepHandlerRef.current = (sequence, stepIndex, text) => {
+      const editor = editorRef.current
+      if (!editor) return
+      const area = resolveStepArea(sequence, stepIndex)
+      const areaRect = area ? projectRect(editor, area) : null
+      // The orb moves beside what it's explaining; its speech opens on the far side, off the drawing.
+      if (areaRect) orb.glideNear(areaRect, [])
+      setLesson((current) => current && {
+        ...current,
+        steps: [...current.steps.slice(0, stepIndex), { text: text ?? "", avoid: areaRect }],
+        view: stepIndex,
+        waiting: false,
+      })
+      setSpeaking(true)
+      window.clearTimeout(speakingTimerRef.current)
+      speakingTimerRef.current = window.setTimeout(() => setSpeaking(false), SPEAKING_PULSE_MS)
+    }
+    endTurnRef.current = () => {
+      window.clearTimeout(homeTimerRef.current)
+      homeTimerRef.current = window.setTimeout(orb.endTurn, RETURN_HOME_DELAY_MS)
+      releaseStepRef.current = null
+      // The last explanation stays until the student presses Done.
+      setLesson((current) => current && { ...current, waiting: false, finished: true })
+    }
+  }, [orb, resolveStepArea])
+
   const [boardController] = useState<WhiteboardController>(() => ({
     isReady: () => engineRef.current !== null && animatorRef.current !== null,
-    play: async (sequence, stepCommentary, onStepStart) => {
+    play: async (sequence, stepCommentary) => {
       const engine = engineRef.current
       const animator = animatorRef.current
       if (!engine || !animator) throw new Error("Whiteboard not ready")
+      window.clearTimeout(homeTimerRef.current)
+      window.clearTimeout(closeTimerRef.current)
+      setLesson({
+        id: ++lessonIdRef.current, steps: [], totalSteps: sequence.length, view: 0,
+        waiting: false, finished: false, open: true, leaving: false,
+      })
 
-      // The drawing itself (every shape, in the same order) always happens
-      // regardless of this setting - only the cosmetic reveal speed and
-      // inter-step pause shrink to near-zero when the user has asked the
-      // OS for reduced motion.
+      // The drawing itself always happens in full; reduced motion only
+      // shrinks the cosmetic reveal speed.
       const reduceMotion = prefersReducedMotion()
       const player = new DrawingPlayer({
         engine,
         animator,
-        ...(reduceMotion ? { baseActionDurationMs: 1, baseStepPauseMs: 1 } : {}),
+        ...(reduceMotion ? { baseActionDurationMs: 1 } : {}),
+        // Between steps, hold until the student presses Next (Stop aborts the wait).
+        waitBetweenSteps: (_step, signal) => new Promise<void>((release) => {
+          releaseStepRef.current = release
+          signal.addEventListener("abort", () => release(), { once: true })
+          setLesson((current) => current && { ...current, waiting: true })
+        }),
       })
       playerRef.current = player
+      // Each step is explained as it starts, so the tutor narrates while it draws.
       let announcedStepIndex = -1
       const unsubscribe = player.subscribe((snapshot) => {
         if (snapshot.state === "drawing" && snapshot.stepIndex !== announcedStepIndex) {
           announcedStepIndex = snapshot.stepIndex
-          onStepStart(snapshot.stepIndex)
-
-          const point = resolveStepFocusPoint(sequence, snapshot.stepIndex)
-          const label = stepCommentary[snapshot.stepIndex]
-          if (point && label) {
-            const id = `pin-${++pinCounterRef.current}`
-            setPins((prev) => [...prev, { id, point, label }])
-            setExpandedPinId(id)
-          }
+          stepHandlerRef.current?.(sequence, snapshot.stepIndex, stepCommentary[snapshot.stepIndex])
         }
       })
 
@@ -197,10 +246,26 @@ export function AppShell() {
       } finally {
         unsubscribe()
         playerRef.current = null
+        endTurnRef.current?.()
       }
     },
     cancel: () => playerRef.current?.cancel(),
     getVisualObjects: () => adapterRef.current?.summarizeObjects() ?? [],
+    getLayout: () => {
+      const editor = editorRef.current
+      if (!editor) return undefined
+      const view = editor.getViewportPageBounds()
+      const occupied = editor.getCurrentPageShapes().flatMap(shape => {
+        const b = editor.getShapePageBounds(shape)
+        return b ? [{ x: b.x, y: b.y, w: Math.max(1, b.w), h: Math.max(1, b.h) }] : []
+      })
+      const right = occupied.reduce((max, b) => Math.max(max, b.x + b.w), view.x)
+      return {
+        viewport: { x: view.x, y: view.y, w: view.w, h: view.h },
+        occupied: occupied.slice(-120),
+        freshArea: { x: occupied.length ? right + 160 : view.x + 80, y: view.y + 80, w: 1000, h: 700 },
+      }
+    },
     placeQuestion: (source) => {
       if (!editorRef.current) throw new Error("Whiteboard not ready")
       return placeQuestionSheet(editorRef.current, source)
@@ -221,74 +286,91 @@ export function AppShell() {
       markQuestionSourceAttached(editor, id)
       return image
     },
+    captureStudentWork: async (alsoInclude) => {
+      const editor = editorRef.current
+      if (!editor) return undefined
+      const viewportBounds = editor.getViewportPageBounds()
+      const all = editor.getCurrentPageShapes()
+      const studentIds = focusedStudentWork({
+        selected: editor.getSelectedShapes(),
+        visible: all.filter((shape) => {
+          const bounds = editor.getShapePageBounds(shape)
+          return bounds ? viewportBounds.collides(bounds) : false
+        }),
+        all,
+      }).map((shape) => shape.id)
+      if (studentIds.length === 0) return undefined
+      const ids: TLShapeId[] = [...studentIds, ...alsoInclude.filter((id) => editor.getShape(id))]
+      const bounds = editor.getShapesPageBounds(ids)
+      if (!bounds) return undefined
+      // Export exactly these page bounds (no padding), so the image's pixels map
+      // linearly onto `region` - the prompt's fraction-to-coordinate formula relies on it.
+      const { blob } = await editor.toImage(ids, {
+        format: "jpeg",
+        quality: 0.85,
+        background: true,
+        bounds: new Box(bounds.x, bounds.y, bounds.w, bounds.h),
+        padding: 0,
+      })
+      const image = await readQuestionImageBlob(blob)
+      const shapes = studentIds.slice(0, 80).flatMap(id => {
+        const shape = editor.getShape(id)
+        const b = editor.getShapePageBounds(id)
+        return shape && b ? [{ id, type: shape.type, bounds: { x: b.x, y: b.y, w: Math.max(1, b.w), h: Math.max(1, b.h) } }] : []
+      })
+      return { kind: "board", image, shapes, region: { x: bounds.x, y: bounds.y, w: Math.max(1, bounds.w), h: Math.max(1, bounds.h) } }
+    },
   }))
 
-  const chat = useTutorChat(boardController)
+  const tutor = useTutor(boardController)
+
+  const companionState: CompanionState =
+    tutor.phase === "thinking" ? "thinking"
+      : speaking || tutor.note || lesson?.waiting ? "speaking"
+      : tutor.phase === "drawing" ? "drawing" : "idle"
+
+  const shownStep = lesson?.open ? lesson.steps[lesson.view] : undefined
+  const speech: TutorSpeech | null = lesson && shownStep ? {
+    id: lesson.id * 1000 + lesson.view,
+    text: shownStep.text,
+    step: lesson.view + 1,
+    totalSteps: lesson.totalSteps,
+    avoid: shownStep.avoid,
+    leaving: lesson.leaving,
+    canGoBack: lesson.view > 0,
+    // Reviewing an earlier step, or the step has finished drawing: Next. End of the lesson: Done. Still drawing: wait.
+    next: lesson.view < lesson.steps.length - 1 || lesson.waiting ? "next" : lesson.finished ? "done" : "drawing",
+  } : null
 
   return (
     <div className="flex h-dvh w-full flex-col bg-surface-subtle">
-      <header className="flex h-12 shrink-0 items-center justify-between border-b border-border-subtle bg-surface px-4">
+      <header className="flex h-12 shrink-0 items-center border-b border-border-subtle bg-surface px-4">
         <RecifeWordmark />
-        <button
-          onClick={() => setIsChatCollapsed((collapsed) => !collapsed)}
-          aria-label={isChatCollapsed ? "Expand chat panel" : "Collapse chat panel"}
-          className="tap-target hidden items-center justify-center rounded-full text-ink-secondary transition-colors hover:bg-surface-sunken hover:text-ink lg:flex"
-        >
-          {isChatCollapsed ? (
-            <PanelRightOpen className="h-4 w-4" />
-          ) : (
-            <PanelRightClose className="h-4 w-4" />
-          )}
-        </button>
       </header>
 
-      <div className="relative flex flex-1 overflow-hidden">
-        <div className="relative flex-1">
-          <WhiteboardSection onEditorMount={handleEditorMount} />
-          <CommentPinsOverlay editor={mountedEditor} pins={pins} expandedId={expandedPinId} onToggle={togglePin} />
-        </div>
-
-        <aside
-          className={cn(
-            "hidden shrink-0 overflow-hidden border-l border-border-subtle bg-surface transition-[width] duration-200 lg:flex",
-            isChatCollapsed ? "w-0" : "w-[25%] min-w-[320px] max-w-[420px]"
-          )}
-          style={{ transitionTimingFunction: "var(--ease-premium)" }}
-        >
-          <div className="flex h-full w-full flex-col">
-            <ChatPanelContent {...chat} />
-          </div>
-        </aside>
-
-        {isChatCollapsed && (
-          <button
-            onClick={() => setIsChatCollapsed(false)}
-            aria-label="Expand chat panel"
-            className="tap-target absolute right-4 top-4 hidden items-center justify-center rounded-full border border-border-subtle bg-surface text-ink-secondary lg:flex"
-            style={{ boxShadow: "var(--shadow-soft)" }}
-          >
-            <PanelRightOpen className="h-4 w-4" />
-          </button>
+      <main ref={mainRef} className="relative flex-1 overflow-hidden">
+        <WhiteboardSection onEditorMount={handleEditorMount} />
+        {mountedEditor && viewport && orb.position && (
+          <AiCompanion
+            position={orb.position}
+            viewport={viewport}
+            state={companionState}
+            busy={tutor.phase !== "idle"}
+            note={tutor.note}
+            onDismissNote={tutor.dismissNote}
+            onUserMove={orb.placeByUser}
+            onAsk={tutor.ask}
+            onRetry={tutor.retry}
+            onCancel={tutor.cancel}
+            speech={speech}
+            onSpeechBack={lessonBack}
+            onSpeechNext={lessonNext}
+            lessonSteps={lesson?.steps.map((step) => step.text) ?? []}
+            hasQuestionSource={tutor.hasQuestionSource}
+            onClearQuestionSource={tutor.clearQuestionSource}
+          />
         )}
-      </div>
-
-      <Sheet open={isMobileChatOpen} onOpenChange={setIsMobileChatOpen}>
-        <SheetTrigger
-          render={
-            <button
-              aria-label="Open tutor chat"
-              className="fixed bottom-5 right-5 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-primary text-primary-foreground lg:hidden"
-              style={{ boxShadow: "var(--shadow-popover)" }}
-            />
-          }
-        >
-          <MessageSquare className="h-6 w-6" />
-        </SheetTrigger>
-        <SheetContent side="bottom" showCloseButton={false} className="h-[75vh] p-0 lg:hidden">
-          <SheetTitle className="sr-only">Tutor chat</SheetTitle>
-          <ChatPanelContent {...chat} onRequestClose={() => setIsMobileChatOpen(false)} />
-        </SheetContent>
-      </Sheet>
+      </main>
     </div>
   )
 }

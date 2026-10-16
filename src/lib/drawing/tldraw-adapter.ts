@@ -19,10 +19,13 @@
 import { createShapeId, getFontFamily, renderPlaintextFromRichText, toRichText, type Editor, type TLArrowShape, type TLShapeId } from "tldraw"
 import type { DrawingAdapter, HighlightOptions, ObjectBounds } from "./adapter"
 import { findContainingId } from "./geometry"
-import { sanitizeMathNotation } from "./math-notation"
+import { formatEquation } from "./math-notation"
+import { MATH_SHAPE_TYPE, measureMath, type MathShape } from "./math-shape"
 import { computeNiceTicks, mapPointsToCanvas, sampleFunction } from "./plotting"
 import { buildDrawSegments, buildLinePointsRecord } from "./tldraw-shape-builders"
 import { AttachedLabels } from "./attached-labels"
+import type { ObjectFrame } from "./force-geometry"
+import { AI_AUTHORED_META } from "./authorship"
 import type {
   ClearRegionAction,
   CreateFreehandPathAction,
@@ -40,7 +43,7 @@ import type {
 } from "./protocol"
 import { plotFunctionActionSchema } from "./protocol"
 
-type TrackedKind = "geo" | "draw" | "line" | "arrow" | "text"
+type TrackedKind = "geo" | "draw" | "line" | "arrow" | "text" | typeof MATH_SHAPE_TYPE
 
 /** The vocabulary used in a board summary - finer-grained than `TrackedKind` (which collapses freehand/polygon into tldraw's "draw"). */
 export type SummaryKind = "shape" | "freehand" | "polygon" | "line" | "arrow" | "text" | "equation" | "plot"
@@ -73,6 +76,23 @@ function formatTickLabel(value: number): string {
   return value === 0 ? "0" : String(value)
 }
 
+/**
+ * tldraw positions a rotated shape by its (turned) top-left corner. Given the
+ * centre the shape should keep, its size and a maths-convention angle
+ * (degrees, anticlockwise), returns that corner and tldraw's rotation
+ * (radians, clockwise on screen, since page y points down).
+ */
+export function turnedAboutCentre(centre: { x: number; y: number }, w: number, h: number, degrees: number) {
+  const rotation = degrees === 0 ? 0 : (-degrees * Math.PI) / 180
+  const cos = Math.cos(rotation)
+  const sin = Math.sin(rotation)
+  return {
+    x: centre.x - (w / 2) * cos + (h / 2) * sin,
+    y: centre.y - (w / 2) * sin - (h / 2) * cos,
+    rotation,
+  }
+}
+
 function regionsIntersect(
   a: { x: number; y: number; w: number; h: number },
   b: { x: number; y: number; w: number; h: number }
@@ -88,6 +108,8 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
 
   private readonly labels: AttachedLabels
   private readonly stopTracking: () => void
+  private readonly stopAuthorTagging: () => void
+  private authoringDepth = 0
 
   constructor(private readonly editor: Editor) {
     this.labels = new AttachedLabels(editor)
@@ -98,9 +120,20 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
         ...shape.meta, recifeObjectId: entry[0], recifeKind: entry[1].summaryKind,
       } })
     })
+    // Every shape created while the engine is executing an action - the
+    // object itself, plot axes/ticks, highlights, attached labels - is the
+    // tutor's. Anything else on the board is the student's own work.
+    this.stopAuthorTagging = editor.sideEffects.registerBeforeCreateHandler("shape", shape =>
+      this.authoringDepth > 0 ? { ...shape, meta: { ...shape.meta, [AI_AUTHORED_META]: true } } : shape
+    )
   }
 
-  dispose(): void { this.labels.dispose(); this.stopTracking() }
+  authored<T>(fn: () => T): T {
+    this.authoringDepth++
+    try { return fn() } finally { this.authoringDepth-- }
+  }
+
+  dispose(): void { this.labels.dispose(); this.stopTracking(); this.stopAuthorTagging() }
 
   private restoreTracked(): void {
     const kinds: SummaryKind[] = ["shape", "freehand", "polygon", "line", "arrow", "text", "equation", "plot"]
@@ -108,7 +141,7 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
       const id = shape.meta.recifeObjectId
       const kind = shape.meta.recifeKind as SummaryKind
       if (typeof id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(id) && kinds.includes(kind) &&
-        ["geo", "draw", "line", "arrow", "text"].includes(shape.type)) {
+        ["geo", "draw", "line", "arrow", "text", MATH_SHAPE_TYPE].includes(shape.type)) {
         this.objects.set(id, { tlId: shape.id, kind: shape.type as TrackedKind, summaryKind: kind })
       }
     }
@@ -122,12 +155,13 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
 
   createShape(action: CreateShapeAction): void {
     const tlId = this.track(action.id, "geo", "shape", action.label)
+    const placement = turnedAboutCentre(
+      { x: action.x + action.w / 2, y: action.y + action.h / 2 }, action.w, action.h, action.rotation ?? 0)
     this.editor.createShapes([
       {
         id: tlId,
         type: "geo",
-        x: action.x,
-        y: action.y,
+        ...placement,
         props: {
           geo: action.shape,
           w: action.w,
@@ -166,7 +200,7 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
 
   createPolygon(action: CreatePolygonAction): void {
     const tlId = this.track(action.id, "draw", "polygon")
-    const segments = buildDrawSegments(action.points, "straight")
+    const segments = buildDrawSegments(action.points, "straight", true)
     this.editor.createShapes([
       {
         id: tlId,
@@ -231,44 +265,85 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
   }
 
   writeText(action: WriteTextAction): void {
-    const tlId = this.track(action.id, "text", "text", action.text)
-    const width = action.w === undefined ? 300 : this.readableTextWidth(action.text, action.size ?? "m", action.w)
-    this.editor.createShapes([
-      {
-        id: tlId,
-        type: "text",
-        x: action.position.x,
-        y: action.position.y,
-        props: {
-          richText: toRichText(action.text),
-          color: action.color ?? "black",
-          size: action.size ?? "m",
-          font: "sans",
-          w: width,
-          autoSize: action.w === undefined,
-        },
-      },
-    ])
+    // All tutor writing is typeset (any $...$ maths included) on a solid backing, so it reads clearly over other content.
+    const tlId = this.track(action.id, MATH_SHAPE_TYPE, "text", action.text)
+    this.createMath(tlId, action.position, action.text, "mixed", action.color ?? "black", action.size ?? "m", action.w ?? 0)
   }
 
   writeEquation(action: WriteEquationAction): void {
-    const expression = sanitizeMathNotation(action.expression)
-    const tlId = this.track(action.id, "text", "equation", expression)
-    this.editor.createShapes([
-      {
-        id: tlId,
-        type: "text",
-        x: action.position.x,
-        y: action.position.y,
-        props: {
-          richText: toRichText(expression),
-          color: action.color ?? "black",
-          size: action.size ?? "m",
-          font: "mono",
-          autoSize: true,
-        },
-      },
+    const tlId = this.track(action.id, MATH_SHAPE_TYPE, "equation", action.expression)
+    this.createMath(tlId, action.position, action.expression, "latex", action.color ?? "black", action.size ?? "m", 0)
+  }
+
+  private createMath(
+    tlId: TLShapeId,
+    position: { x: number; y: number },
+    text: string,
+    mode: MathShape["props"]["mode"],
+    color: DrawingColor,
+    size: MathShape["props"]["size"],
+    maxW: number
+  ): void {
+    const { w, h } = measureMath(this.editor, text, mode, size, maxW)
+    this.editor.createShapes<MathShape>([
+      { id: tlId, type: MATH_SHAPE_TYPE, x: position.x, y: position.y, props: { text, mode, color, size, maxW, w, h } },
     ])
+    this.keepTextClear(tlId)
+  }
+
+  /**
+   * Lines of writing must never sit on top of each other: if a new text or
+   * maths shape lands on existing writing, move it down below that writing
+   * (keeping its column), repeating until it's clear. Writing inside a box
+   * or over a line is left alone - labels often belong there on purpose.
+   */
+  private keepTextClear(tlId: TLShapeId): void {
+    const GAP = 10
+    const writing = this.editor.getCurrentPageShapes().filter(
+      (shape) => shape.id !== tlId && (shape.type === "text" || shape.type === MATH_SHAPE_TYPE) && !shape.meta.recifeLabelOwner
+    )
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const bounds = this.editor.getShapePageBounds(tlId)
+      if (!bounds) return
+      const hit = writing
+        .map((shape) => this.editor.getShapePageBounds(shape))
+        .find((other) => other && other.w > 0 && regionsIntersect(bounds, other))
+      if (!hit) return
+      const shape = this.editor.getShape(tlId)!
+      this.editor.updateShape({ id: tlId, type: shape.type, y: shape.y + (hit.y + hit.h + GAP - bounds.y) })
+    }
+    this.keepOffDrawing(tlId)
+  }
+
+  /**
+   * Writing must not sit on top of lines, arrows or shapes either - its solid
+   * backing would hide them. Moves it to the nearest clear spot close by.
+   * Deliberately left alone: writing fully inside a box (a label in a
+   * rectangle), and anything over a background image or highlight.
+   */
+  private keepOffDrawing(tlId: TLShapeId): void {
+    const bounds = this.editor.getShapePageBounds(tlId)
+    if (!bounds) return
+    const obstacles = this.editor.getCurrentPageShapes().flatMap((shape) => {
+      if (shape.id === tlId || shape.type === "image" || shape.meta.recifeLabelOwner || shape.id.endsWith(":highlight")) return []
+      const box = this.editor.getShapePageBounds(shape)
+      if (!box || (box.w === 0 && box.h === 0)) return []
+      const contains = box.x <= bounds.x && box.y <= bounds.y && box.x + box.w >= bounds.x + bounds.w && box.y + box.h >= bounds.y + bounds.h
+      return shape.type === "geo" && contains ? [] : [box]
+    })
+    const clearAt = (dx: number, dy: number) => {
+      const moved = { x: bounds.x + dx, y: bounds.y + dy, w: bounds.w, h: bounds.h }
+      return !obstacles.some((other) => regionsIntersect(moved, other))
+    }
+    if (clearAt(0, 0)) return
+    // Nearest first; on a tie prefer moving down, then right, keeping reading order.
+    const offsets: { dx: number; dy: number }[] = []
+    for (let dy = -240; dy <= 240; dy += 12) for (let dx = -240; dx <= 240; dx += 12) offsets.push({ dx, dy })
+    offsets.sort((a, b) => Math.hypot(a.dx, a.dy) - Math.hypot(b.dx, b.dy) || b.dy - a.dy || b.dx - a.dx)
+    const spot = offsets.find(({ dx, dy }) => clearAt(dx, dy))
+    if (!spot) return // nowhere nearby: overlapping (readably, on its backing) beats wandering far from its subject
+    const shape = this.editor.getShape(tlId)!
+    this.editor.updateShape({ id: tlId, type: shape.type, x: shape.x + spot.dx, y: shape.y + spot.dy })
   }
 
   plotFunction(action: PlotFunctionAction): void {
@@ -458,16 +533,36 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
     const props: Record<string, unknown> = {}
 
     const supported: Record<TrackedKind, readonly string[]> = {
-      geo: ["color", "size", "dash", "fill", "text", "w", "h", "opacity"],
+      geo: ["color", "size", "dash", "fill", "text", "w", "h", "opacity", "rotation"],
       text: ["color", "size", "text", "w", "opacity"],
+      [MATH_SHAPE_TYPE]: ["color", "size", "text", "w", "opacity"],
       arrow: ["color", "size", "dash", "text", "opacity"],
       line: ["color", "size", "dash", "opacity"],
       draw: ["color", "size", "dash", "fill", "opacity"],
     }
     for (const field of Object.keys(patch)) {
       if (!supported[tracked.kind].includes(field)) {
-        throw new Error(`Cannot update "${field}" on ${tracked.kind} object "${id}"`)
+        throw new Error(`Cannot update "${field}" on ${tracked.kind === MATH_SHAPE_TYPE ? "math" : tracked.kind} object "${id}"`)
       }
+    }
+
+    if (tracked.kind === MATH_SHAPE_TYPE) {
+      this.updateMath(tracked, patch)
+      return
+    }
+    // An equation written before maths was typeset: re-create it as a typeset one when its text changes.
+    if (tracked.summaryKind === "equation" && patch.text !== undefined) {
+      const bounds = this.editor.getShapePageBounds(tracked.tlId)
+      const shape = this.editor.getShape(tracked.tlId)
+      const color = patch.color ?? (shape?.type === "text" ? shape.props.color : "black")
+      const size = patch.size ?? (shape?.type === "text" ? shape.props.size : "m")
+      this.editor.run(() => {
+        this.editor.deleteShapes([tracked.tlId])
+        const tlId = this.track(id, MATH_SHAPE_TYPE, "equation", patch.text)
+        this.createMath(tlId, { x: bounds?.x ?? 0, y: bounds?.y ?? 0 }, patch.text!, "latex", color as DrawingColor, size, 0)
+        if (patch.opacity !== undefined) this.editor.updateShape({ id: tlId, type: MATH_SHAPE_TYPE, opacity: patch.opacity })
+      })
+      return
     }
 
     if (patch.color !== undefined) props.color = patch.color
@@ -480,7 +575,7 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
     if (tracked.kind === "text" && patch.w !== undefined) props.autoSize = false
     if (tracked.kind === "geo" && patch.h !== undefined) props.h = patch.h
     if (patch.text !== undefined) {
-      const text = tracked.summaryKind === "equation" ? sanitizeMathNotation(patch.text) : patch.text
+      const text = tracked.summaryKind === "equation" ? formatEquation(patch.text) : patch.text
       if (tracked.kind === "geo" || tracked.kind === "arrow") {
         props.richText = toRichText("")
         this.labels.set(tracked.tlId, text, patch.color)
@@ -498,14 +593,45 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
       }
     }
 
-    const top: { id: TLShapeId; type: TrackedKind; opacity?: number; props?: typeof props } = {
+    const top: { id: TLShapeId; type: TrackedKind; opacity?: number; props?: typeof props; x?: number; y?: number; rotation?: number } = {
       id: tracked.tlId,
       type: tracked.kind,
     }
     if (patch.opacity !== undefined) top.opacity = patch.opacity
+    if (patch.rotation !== undefined) {
+      // Turn about the shape's current centre (a rectangle's bounding-box centre, however it's already turned).
+      const shape = this.editor.getShape(tracked.tlId)
+      const bounds = this.editor.getShapePageBounds(tracked.tlId)
+      if (shape?.type === "geo" && bounds) {
+        const centre = { x: bounds.x + bounds.w / 2, y: bounds.y + bounds.h / 2 }
+        Object.assign(top, turnedAboutCentre(centre, patch.w ?? shape.props.w, patch.h ?? shape.props.h, patch.rotation))
+      }
+    }
     if (Object.keys(props).length > 0) top.props = props
 
     this.editor.updateShape(top)
+  }
+
+  private updateMath(tracked: TrackedObject, patch: UpdateObjectPatch): void {
+    const shape = this.editor.getShape<MathShape>(tracked.tlId)
+    if (!shape) throw new Error("This object no longer exists on the board.")
+    const next = { ...shape.props }
+    if (patch.color !== undefined) next.color = patch.color
+    if (patch.size !== undefined) next.size = patch.size
+    if (patch.w !== undefined) next.maxW = patch.w
+    if (patch.text !== undefined) {
+      next.text = patch.text
+      // Prose can gain or lose maths in an edit; a bare expression stays an expression.
+      if (tracked.summaryKind !== "equation") next.mode = "mixed"
+      tracked.label = patch.text
+    }
+    Object.assign(next, measureMath(this.editor, next.text, next.mode, next.size, next.maxW))
+    this.editor.updateShape<MathShape>({
+      id: tracked.tlId,
+      type: MATH_SHAPE_TYPE,
+      props: next,
+      ...(patch.opacity !== undefined ? { opacity: patch.opacity } : {}),
+    })
   }
 
   deleteObject(id: string): void {
@@ -631,6 +757,20 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
     return { x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h }
   }
 
+  /** Centre, unturned size and turn of an object - so a force arrow can start exactly on a turned block's edge. */
+  getObjectFrame(id: string): ObjectFrame | undefined {
+    const tracked = this.objects.get(id)
+    const bounds = tracked && this.editor.getShapePageBounds(tracked.tlId)
+    if (!tracked || !bounds) return undefined
+    const centre = { cx: bounds.x + bounds.w / 2, cy: bounds.y + bounds.h / 2 }
+    const shape = this.editor.getShape(tracked.tlId)
+    if (shape?.type === "geo") {
+      return { ...centre, w: shape.props.w, h: shape.props.h, rotation: (-shape.rotation * 180) / Math.PI,
+        round: shape.props.geo === "ellipse" || shape.props.geo === "oval" }
+    }
+    return { ...centre, w: bounds.w, h: bounds.h, rotation: 0, round: false }
+  }
+
   /**
    * A compact snapshot of every AI-created object still actually live on
    * the board - this (never the raw tldraw document, and never objects a
@@ -705,7 +845,11 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
   }
 
   private liveLabel(tracked: TrackedObject): { label?: string } {
-    const shape = this.labels.get(tracked.tlId) ?? this.editor.getShape(tracked.tlId)
+    const own = this.editor.getShape(tracked.tlId)
+    if (own?.type === MATH_SHAPE_TYPE) return { label: own.props.text.slice(0, 200) }
+    const typesetLabel = this.labels.textOf(tracked.tlId)
+    if (typesetLabel) return { label: typesetLabel.slice(0, 200) }
+    const shape = this.labels.get(tracked.tlId) ?? own
     const label = shape && "richText" in shape.props
       ? renderPlaintextFromRichText(this.editor, shape.props.richText)
       : tracked.label

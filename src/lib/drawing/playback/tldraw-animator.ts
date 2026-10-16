@@ -20,7 +20,7 @@
  * never one write per point.
  */
 
-import { createShapeId, toRichText, type Editor } from "tldraw"
+import { createShapeId, renderPlaintextFromRichText, toRichText, type Editor } from "tldraw"
 import type {
   CreateFreehandPathAction,
   CreatePolygonAction,
@@ -32,7 +32,7 @@ import type {
   WriteEquationAction,
   WriteTextAction,
 } from "../protocol"
-import { sanitizeMathNotation } from "../math-notation"
+import { MATH_SHAPE_TYPE } from "../math-shape"
 import { mapPointsToCanvas, sampleFunction } from "../plotting"
 import { buildDrawSegments, buildLinePointsRecord, type PlainPoint } from "../tldraw-shape-builders"
 import type { AnimationContext, ShapeAnimator } from "./animator"
@@ -95,7 +95,7 @@ export class TldrawShapeAnimator implements ShapeAnimator {
           id: tlId,
           type: "draw",
           props: {
-            segments: buildDrawSegments(action.points.slice(0, count), "straight"),
+            segments: buildDrawSegments(action.points.slice(0, count), "straight", isFinal),
             isClosed: isFinal,
           },
         })
@@ -167,16 +167,27 @@ export class TldrawShapeAnimator implements ShapeAnimator {
   }
 
   async revealText(action: WriteTextAction, ctx: AnimationContext): Promise<void> {
-    await this.typeText(createShapeId(action.id), action.text, ctx)
+    await this.revealWriting(createShapeId(action.id), ctx)
   }
 
   async revealEquation(action: WriteEquationAction, ctx: AnimationContext): Promise<void> {
-    await this.typeText(createShapeId(action.id), sanitizeMathNotation(action.expression), ctx)
+    await this.revealWriting(createShapeId(action.id), ctx)
+  }
+
+  /**
+   * Types plain text out; typeset maths fades in instead, since a half-typed
+   * LaTeX expression can't render. Either way the final frame is exactly what
+   * the adapter wrote, so the reveal never undoes its formatting.
+   */
+  private async revealWriting(tlId: ReturnType<typeof createShapeId>, ctx: AnimationContext): Promise<void> {
+    const shape = this.editor.getShape(tlId)
+    if (shape?.type === MATH_SHAPE_TYPE) return this.fadeIn(tlId, MATH_SHAPE_TYPE, ctx)
+    if (shape?.type === "text") await this.typeText(tlId, renderPlaintextFromRichText(this.editor, shape.props.richText), ctx)
   }
 
   private async fadeIn(
     tlId: ReturnType<typeof createShapeId>,
-    type: "geo" | "text" | "arrow" | "draw" | "line",
+    type: "geo" | "text" | "arrow" | "draw" | "line" | typeof MATH_SHAPE_TYPE,
     ctx: AnimationContext
   ): Promise<void> {
     const steps = MAX_REVEAL_STEPS

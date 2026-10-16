@@ -270,4 +270,38 @@ describe("DrawingPlayer", () => {
     expect(snapshots.every((s) => s.totalActions === 2)).toBe(true)
     expect(snapshots.at(-1)?.actionIndex).toBe(2)
   })
+
+  it("holds after each step until the student moves on, and never after the last step", async () => {
+    const adapter = new FakeDrawingAdapter()
+    const gates: { step: number; release: () => void }[] = []
+    const player = new DrawingPlayer({
+      engine: new DrawingEngine(adapter),
+      waitBetweenSteps: (step) => new Promise<void>((release) => gates.push({ step, release })),
+    })
+    const done = player.play([{ actions: [shapeAction("a")] }, { actions: [shapeAction("b")] }])
+    await flush()
+    expect(adapter.calls).toHaveLength(1)
+    expect(gates.map((g) => g.step)).toEqual([0])
+    gates[0].release()
+    await done
+    expect(adapter.calls).toHaveLength(2)
+    expect(gates).toHaveLength(1)
+    expect(player.getSnapshot().state).toBe("completed")
+  })
+
+  it("cancels while waiting for the student, aborting the gate", async () => {
+    const adapter = new FakeDrawingAdapter()
+    let aborted = false
+    const player = new DrawingPlayer({
+      engine: new DrawingEngine(adapter),
+      waitBetweenSteps: (_step, signal) => new Promise<void>((release) => signal.addEventListener("abort", () => { aborted = true; release() })),
+    })
+    const done = player.play([{ actions: [shapeAction("a")] }, { actions: [shapeAction("b")] }])
+    await flush()
+    player.cancel()
+    await done
+    expect(aborted).toBe(true)
+    expect(player.getSnapshot().state).toBe("cancelled")
+    expect(adapter.calls).toHaveLength(1)
+  })
 })

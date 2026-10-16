@@ -1,41 +1,12 @@
 "use client"
 
 import { useState } from "react"
-import { Tldraw, useValue, type Editor, type TLComponents } from "tldraw"
+import { Tldraw, useValue, type Editor } from "tldraw"
 import "tldraw/tldraw.css"
-import { WhiteboardToolbar } from "./whiteboard-toolbar"
+import { MathShapeUtil } from "@/lib/drawing/math-shape"
 
-// Recife Sketch brings its own minimal floating toolbar (see
-// WhiteboardToolbar), so every piece of tldraw's default chrome is hidden
-// here. The canvas itself (drawing, selection, pan/zoom, keyboard
-// shortcuts) is untouched — only the UI overlays are suppressed.
-const HIDDEN_COMPONENTS: TLComponents = {
-  MainMenu: null,
-  PageMenu: null,
-  NavigationPanel: null,
-  Toolbar: null,
-  StylePanel: null,
-  MenuPanel: null,
-  TopPanel: null,
-  SharePanel: null,
-  DebugPanel: null,
-  DebugMenu: null,
-  HelperButtons: null,
-  Minimap: null,
-  ZoomMenu: null,
-  ActionsMenu: null,
-  QuickActions: null,
-  HelpMenu: null,
-  KeyboardShortcutsDialog: null,
-  CursorChatBubble: null,
-  PeopleMenu: null,
-  PeopleMenuAvatar: null,
-  PeopleMenuItem: null,
-  PeopleMenuFacePile: null,
-  FollowingIndicator: null,
-  UserPresenceEditor: null,
-}
-
+// Module-level so tldraw sees a stable array across renders.
+const shapeUtils = [MathShapeUtil]
 /** A quiet first-run hint, shown only while the board has nothing on it yet. */
 function WhiteboardEmptyHint({ editor }: { editor: Editor | null }) {
   const isEmpty = useValue(
@@ -49,14 +20,14 @@ function WhiteboardEmptyHint({ editor }: { editor: Editor | null }) {
   return (
     <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-6">
       <p className="max-w-[260px] text-center text-[13px] leading-relaxed text-ink-muted">
-        Draw freely, or ask Recife a question in the chat panel to start a lesson here.
+        Draw freely, or tap the blue Recife orb to ask a question about your board.
       </p>
     </div>
   )
 }
 
 interface WhiteboardSectionProps {
-  /** Called once, in addition to the internal toolbar wiring, when tldraw mounts. */
+  /** Connects the AI drawing adapter to the same editor used by the native tldraw UI. */
   onEditorMount?: (editor: Editor) => void
 }
 
@@ -69,15 +40,16 @@ export function WhiteboardSection({ onEditorMount }: WhiteboardSectionProps) {
   }
 
   return (
-    <div className="relative h-full w-full bg-surface-subtle">
+    // Contain tldraw's internal UI layers so Recife's sibling overlays stay above its tools.
+    <div className="relative isolate z-0 h-full w-full bg-surface-subtle">
       <Tldraw
         persistenceKey="recife-sketch-board"
-        components={HIDDEN_COMPONENTS}
+        shapeUtils={shapeUtils}
         onMount={handleMount}
         licenseKey={process.env.NEXT_PUBLIC_TLDRAW_LICENSE_KEY}
       />
       <WhiteboardEmptyHint editor={editor} />
-      <WhiteboardToolbar editor={editor} />
     </div>
   )
 }
+

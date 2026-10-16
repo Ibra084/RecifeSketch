@@ -4,6 +4,10 @@ import { useEffect, useRef, useState } from "react"
 import { transformerFixture } from "./transformer-fixture"
 import { Tldraw, type Editor } from "tldraw"
 import "tldraw/tldraw.css"
+import { MathShapeUtil } from "@/lib/drawing/math-shape"
+
+// Module-level so tldraw sees a stable array across renders.
+const shapeUtils = [MathShapeUtil]
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { DrawingEngine, type DrawingRunResult } from "@/lib/drawing/engine"
@@ -180,6 +184,7 @@ export function DrawingHarness() {
       <div className="relative flex-1">
         <Tldraw
           persistenceKey="recife-sketch-drawing-harness"
+          shapeUtils={shapeUtils}
           onMount={handleMount}
           licenseKey={process.env.NEXT_PUBLIC_TLDRAW_LICENSE_KEY}
         />

@@ -35,6 +35,13 @@ export interface DrawingPlayerOptions {
   baseActionDurationMs?: number
   speed?: number
   clock?: PlaybackClock
+  /**
+   * Called when a step (other than the last) has finished drawing. Playback
+   * holds until the returned promise settles - e.g. until the student clicks
+   * "Next" - instead of moving on after the step's timed pause. Cancelling
+   * the player aborts `signal`; the gate should then resolve promptly.
+   */
+  waitBetweenSteps?: (completedStepIndex: number, signal: AbortSignal) => Promise<void>
 }
 
 export class DrawingPlayer {
@@ -43,6 +50,7 @@ export class DrawingPlayer {
   private readonly baseStepPauseMs: number
   private readonly baseActionDurationMs: number
   private readonly clock: PlaybackClock
+  private readonly waitBetweenSteps: DrawingPlayerOptions["waitBetweenSteps"]
   private speed: number
 
   private state: PlaybackState = "idle"
@@ -63,6 +71,7 @@ export class DrawingPlayer {
     this.baseStepPauseMs = options.baseStepPauseMs ?? DEFAULT_STEP_PAUSE_MS
     this.baseActionDurationMs = options.baseActionDurationMs ?? DEFAULT_ACTION_DURATION_MS
     this.clock = options.clock ?? REALTIME_CLOCK
+    this.waitBetweenSteps = options.waitBetweenSteps
     this.speed = clampSpeed(options.speed ?? 1)
   }
 
@@ -141,7 +150,8 @@ export class DrawingPlayer {
           return this.setState("error")
         }
 
-        await this.animate(action)
+        // Animate what was actually drawn (a draw_force becomes a concrete arrow).
+        await this.animate(result.executed[0]?.action ?? action)
         this.actionIndex++
         this.emit()
         if (this.cancelled) return this.setState("cancelled")
@@ -152,8 +162,12 @@ export class DrawingPlayer {
         await this.waitWhilePaused()
         if (this.cancelled) return this.setState("cancelled")
 
-        const pauseMs = (step.pauseAfterMs ?? this.baseStepPauseMs) / this.speed
-        await wait(pauseMs, this.abortController.signal, this.clock)
+        if (this.waitBetweenSteps) {
+          await this.waitBetweenSteps(stepIndex, this.abortController.signal)
+        } else {
+          const pauseMs = (step.pauseAfterMs ?? this.baseStepPauseMs) / this.speed
+          await wait(pauseMs, this.abortController.signal, this.clock)
+        }
         if (this.cancelled) return this.setState("cancelled")
       }
     }

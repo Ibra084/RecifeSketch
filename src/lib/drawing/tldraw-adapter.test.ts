@@ -9,14 +9,19 @@ vi.mock("tldraw", () => ({
   getIndices: (count: number) => Array.from({ length: count }, (_, i) => `a${i}`),
   compressLegacySegments: (segments: unknown) => segments,
 }))
+vi.mock("./math-shape", () => ({
+  MATH_SHAPE_TYPE: "recife-math",
+  measureMath: (_editor: unknown, text: string) => ({ w: text.length * 10, h: 30 }),
+}))
 import { TldrawDrawingAdapter } from "./tldraw-adapter"
 
 function fixture() {
-  type Shape = { id: string; type: string; x: number; y: number; meta: Record<string, unknown>; props: Record<string, unknown> }
+  type Shape = { id: string; type: string; x: number; y: number; rotation?: number; meta: Record<string, unknown>; props: Record<string, unknown> }
   const shapes = new Map<string, Shape>()
   const editor = {
     sideEffects: {
       registerAfterChangeHandler: () => () => {}, registerAfterCreateHandler: () => () => {}, registerAfterDeleteHandler: () => () => {},
+      registerBeforeCreateHandler: () => () => {},
     },
     getCurrentPageShapes: () => Array.from(shapes.values()),
     createShapes: (items: Shape[]) => items.forEach((shape) => shapes.set(shape.id, structuredClone({ ...shape, meta: shape.meta ?? {} }))),
@@ -46,18 +51,17 @@ describe("tldraw adapter regression contracts (editor stub)", () => {
     adapter.createShape({ type: "create_shape", id: "r", shape: "rectangle", x: 0, y: 0, w: 150, h: 60, label: "Resistor" })
     adapter.updateObject("r", { text: "20 Ω" })
     expect(shapes.get("shape:r")!.props.richText).toEqual({ text: "" })
-    expect(shapes.get("shape:shape:r:label")!.props.richText).toEqual({ text: "20 Ω" })
+    expect(shapes.get("shape:shape:r:label")!.props).toMatchObject({ text: "20 Ω", mode: "mixed" })
     adapter.drawArrow({ type: "draw_arrow", id: "i", start: { x: 0, y: 0 }, end: { x: 100, y: 0 }, label: "I" })
     adapter.updateObject("i", { text: "0.5 A" })
-    expect(shapes.get("shape:shape:i:label")!.props.richText).toEqual({ text: "0.5 A" })
+    expect(shapes.get("shape:shape:i:label")!.props).toMatchObject({ text: "0.5 A", mode: "mixed" })
   })
-  it("keeps a short label readable and allows widening it", () => {
+  it("writes text with a wrap width that can be widened later", () => {
     const { adapter, shapes } = fixture()
     adapter.writeText({ type: "write_text", id: "t", position: { x: 0, y: 0 }, text: "Battery", w: 30 })
-    expect(shapes.get("shape:t")!.props.w).toBe(88)
+    expect(shapes.get("shape:t")).toMatchObject({ type: "recife-math", props: { text: "Battery", mode: "mixed", maxW: 30 } })
     adapter.updateObject("t", { w: 250 })
-    expect(shapes.get("shape:t")!.props.w).toBe(250)
-    expect(shapes.get("shape:t")!.props.autoSize).toBe(false)
+    expect(shapes.get("shape:t")!.props.maxW).toBe(250)
   })
   it("moves a wire's visible top-left, not its zero origin", () => {
     const { adapter, editor } = fixture()
@@ -71,9 +75,51 @@ describe("tldraw adapter regression contracts (editor stub)", () => {
     expect(() => adapter.updateObject("wire", { color: "red", text: "oops" })).toThrow(/Cannot update/)
     expect(shapes.get("shape:wire")!.props.color).toBe("black")
   })
-  it("summarizes manually edited live text with safe length and thin bounds", () => {
+  it("turns a box about its centre, anticlockwise for a positive angle (a block on a slope)", () => {
+    const { adapter, shapes } = fixture()
+    adapter.createShape({ type: "create_shape", id: "block", shape: "rectangle", x: 100, y: 100, w: 80, h: 40, rotation: 30 })
+    const block = shapes.get("shape:block")!
+    // tldraw turns clockwise for positive radians on screen, so an anticlockwise 30° is -π/6.
+    expect(block.rotation!).toBeCloseTo(-Math.PI / 6)
+    // The box's own centre (40, 20 in its frame), turned and placed, is still where an unturned box's centre would be.
+    const r = block.rotation!
+    const centre = { x: block.x + 40 * Math.cos(r) - 20 * Math.sin(r), y: block.y + 40 * Math.sin(r) + 20 * Math.cos(r) }
+    expect(centre.x).toBeCloseTo(140)
+    expect(centre.y).toBeCloseTo(120)
+  })
+  it("leaves an unturned box exactly where it was asked to go", () => {
+    const { adapter, shapes } = fixture()
+    adapter.createShape({ type: "create_shape", id: "box", shape: "rectangle", x: 10, y: 20, w: 30, h: 40 })
+    expect(shapes.get("shape:box")).toMatchObject({ x: 10, y: 20, rotation: 0 })
+  })
+  it("typesets equations as LaTeX shapes the AI can read back", () => {
+    const { adapter, shapes } = fixture()
+    adapter.writeEquation({ type: "write_equation", id: "eq", position: { x: 10, y: 20 }, expression: "a = \\frac{F}{m}" })
+    expect(shapes.get("shape:eq")).toMatchObject({ type: "recife-math", x: 10, y: 20, props: { text: "a = \\frac{F}{m}", mode: "latex" } })
+    expect(adapter.summarizeObjects()[0]).toMatchObject({ id: "eq", kind: "equation", label: "a = \\frac{F}{m}" })
+  })
+  it("writes all prose - with or without $maths$ - as typeset text on a solid backing", () => {
+    const { adapter, shapes } = fixture()
+    adapter.writeText({ type: "write_text", id: "m", position: { x: 0, y: 0 }, text: "So $a = 1.2\\,\\text{m/s}^2$" })
+    adapter.writeText({ type: "write_text", id: "p", position: { x: 0, y: 500 }, text: "Forces on the crate" })
+    expect(shapes.get("shape:m")).toMatchObject({ type: "recife-math", props: { mode: "mixed" } })
+    expect(shapes.get("shape:p")).toMatchObject({ type: "recife-math", props: { mode: "mixed" } })
+  })
+  it("moves a new line of working below existing writing instead of overlapping it", () => {
+    const { adapter, shapes } = fixture()
+    adapter.writeEquation({ type: "write_equation", id: "a", position: { x: 0, y: 0 }, expression: "W = mg" })
+    adapter.writeEquation({ type: "write_equation", id: "b", position: { x: 20, y: 10 }, expression: "F = ma" })
+    expect(shapes.get("shape:b")).toMatchObject({ x: 20, y: 40 }) // below a's 30-unit height, plus a 10-unit gap
+  })
+  it("edits an equation's LaTeX in place and re-measures it", () => {
+    const { adapter, shapes } = fixture()
+    adapter.writeEquation({ type: "write_equation", id: "eq", position: { x: 0, y: 0 }, expression: "x" })
+    adapter.updateObject("eq", { text: "x^2 + 1", color: "red" })
+    expect(shapes.get("shape:eq")!.props).toMatchObject({ text: "x^2 + 1", color: "red", w: 70 })
+  })
+  it("still summarizes native text from older boards, with safe length and thin bounds", () => {
     const { adapter, editor } = fixture()
-    adapter.writeText({ type: "write_text", id: "t", position: { x: 0, y: 0 }, text: "Before" })
+    editor.createShapes([{ id: "shape:t", type: "text", x: 0, y: 0, meta: { recifeObjectId: "t", recifeKind: "text" }, props: { richText: { text: "Before" } } }])
     editor.updateShape({ id: "shape:t", props: { richText: { text: "x".repeat(201) } } })
     expect(adapter.summarizeObjects()[0]).toMatchObject({ label: "x".repeat(200), h: 1 })
   })

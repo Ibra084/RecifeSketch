@@ -169,19 +169,24 @@ export const drawLineActionSchema = z.strictObject({
   size: sizeStyleSchema.optional(),
 })
 
-export const drawArrowActionSchema = z.strictObject({
-  type: z.literal("draw_arrow"),
-  id: objectIdSchema,
-  start: pointSchema,
-  end: pointSchema,
-  color: colorSchema.optional(),
-  dash: dashStyleSchema.optional(),
-  size: sizeStyleSchema.optional(),
-  arrowheadStart: arrowheadStyleSchema.optional(),
-  arrowheadEnd: arrowheadStyleSchema.optional(),
-  label: textSchema.optional(),
-  bend: z.number().finite().min(-1).max(1).optional(),
-})
+export const drawArrowActionSchema = z
+  .strictObject({
+    type: z.literal("draw_arrow"),
+    id: objectIdSchema,
+    start: pointSchema,
+    end: pointSchema,
+    color: colorSchema.optional(),
+    dash: dashStyleSchema.optional(),
+    size: sizeStyleSchema.optional(),
+    arrowheadStart: arrowheadStyleSchema.optional(),
+    arrowheadEnd: arrowheadStyleSchema.optional(),
+    label: textSchema.optional(),
+    bend: z.number().finite().min(-1).max(1).optional(),
+  })
+  .refine(
+    (action) => Math.hypot(action.end.x - action.start.x, action.end.y - action.start.y) >= 4,
+    "an arrow needs a real span between start and end - it can't point at nothing"
+  )
 
 export const drawCurveActionSchema = z.strictObject({
   type: z.literal("draw_curve"),

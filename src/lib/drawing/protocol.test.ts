@@ -21,6 +21,29 @@ describe("drawingActionSchema", () => {
     expect(result.success).toBe(true)
   })
 
+  it("rejects a zero-length arrow (identical start and end)", () => {
+    // Seen from a real live model response: an arrow meant to point at
+    // "Magnetic Flux" with start === end - renders as nothing, points at
+    // nothing. draw_repeated_curve already guards an equivalent case.
+    const result = drawingActionSchema.safeParse({
+      type: "draw_arrow",
+      id: "flux",
+      start: { x: 500, y: 250 },
+      end: { x: 500, y: 250 },
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it("accepts an arrow with a real span", () => {
+    const result = drawingActionSchema.safeParse({
+      type: "draw_arrow",
+      id: "flux",
+      start: { x: 500, y: 250 },
+      end: { x: 500, y: 300 },
+    })
+    expect(result.success).toBe(true)
+  })
+
   it("rejects an unknown action type", () => {
     const result = drawingActionSchema.safeParse({
       type: "nuke_board",

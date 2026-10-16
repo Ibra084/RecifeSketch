@@ -1,4 +1,5 @@
 import { AssetRecordType, createShapeId, toRichText, type Editor, type TLShapeId } from "tldraw"
+import { AI_AUTHORED_META } from "./authorship"
 import type { QuestionSource } from "../ai/question-source"
 
 /** The only imported image is the student's source material; AI annotations remain shapes. */
@@ -39,7 +40,8 @@ export function placeQuestionSheet(editor: Editor, source: QuestionSource): TLSh
 export function findUnattachedQuestionImage(editor: Editor): TLShapeId | undefined {
   const shape = editor
     .getCurrentPageShapes()
-    .find((shape) => shape.type === "image" && !shape.meta.recifeQuestionSource)
+    // Only the student's own images - never a figure the tutor copied onto the board.
+    .find((shape) => shape.type === "image" && !shape.meta.recifeQuestionSource && !shape.meta[AI_AUTHORED_META])
   return shape?.id
 }
 

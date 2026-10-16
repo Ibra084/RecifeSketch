@@ -15,6 +15,10 @@ import type {
   DrawGraphAction,
   MarkImageAction,
   HighlightTextAction,
+  CopyFigureAction,
+  DrawPulleyAction,
+  DrawMassAction,
+  DrawStringAction,
   DrawApparatusAction,
   DrawInclineAction,
   DrawOnInclineAction,
@@ -60,6 +64,14 @@ export interface DrawingAdapter {
   markImage(action: MarkImageAction): void
   /** Printed words in that image, highlighted on their exact (OCR) pixel boxes. */
   highlightText(action: HighlightTextAction): void
+  /** A figure copied exactly out of the question image, with named parts as anchors. */
+  copyFigure(action: CopyFigureAction): void
+  /** A pulley wheel and its support. */
+  drawPulley(action: DrawPulleyAction): void
+  /** A block or particle, possibly hanging from a pulley. */
+  drawMass(action: DrawMassAction): void
+  /** A string joining two objects, possibly over a pulley, meeting each exactly. */
+  drawString(action: DrawStringAction): void
   /** A piece of lab apparatus from the kit, as editable shapes. */
   drawApparatus(action: DrawApparatusAction): void
   /** A slope from its angle and downhill direction, with the angle marked. */

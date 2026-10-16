@@ -104,6 +104,9 @@ export class AttachedLabels {
    */
   private covers(shape: TLShape, shapeBox: LabelBox, box: LabelBox): boolean {
     if (!boxesOverlap(box, shapeBox, 6)) return false
+    // An image (a question photo, a copied figure) is a background to annotate on: labels, with their
+    // solid backing, may sit over it - otherwise every label on a copied figure is pushed off it.
+    if (shape.type === "image") return false
     // Apparatus (a group of outlines) counts as thin strokes too, so labels can sit in its open spaces.
     if (shape.type !== "line" && shape.type !== "draw" && shape.type !== "arrow" && shape.type !== "group") return true
     const pad = 6

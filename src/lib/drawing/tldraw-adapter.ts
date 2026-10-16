@@ -26,6 +26,9 @@ import { toDesmosLatex } from "./desmos-latex"
 import { boxOutline, circleOutline, imageBoxToPage, underlineFor } from "./image-marks"
 import { APPARATUS_SHAPE, buildApparatus, placeApparatus } from "./apparatus"
 import { blockOnIncline, inclineGeometry } from "./incline"
+import { hangingMassCentre, pulleyAtCorner, stringPath, tangentPoint, type Wheel } from "./mechanics"
+import { forceArrow } from "./force-geometry"
+import { copySize, cropFor, overlapArea as figureOverlap, partOnCopy, tightenToInk, tiltedRectIn, trimProseFromFigure } from "./figure-copy"
 import { findPhrase, pixelRectToPage, type OcrResult } from "./text-match"
 import { computeNiceTicks, mapPointsToCanvas, sampleFunction } from "./plotting"
 import { buildDrawSegments, buildLinePointsRecord } from "./tldraw-shape-builders"
@@ -41,6 +44,10 @@ import type {
   DrawGraphAction,
   MarkImageAction,
   HighlightTextAction,
+  CopyFigureAction,
+  DrawPulleyAction,
+  DrawMassAction,
+  DrawStringAction,
   DrawApparatusAction,
   DrawInclineAction,
   DrawOnInclineAction,
@@ -57,7 +64,7 @@ import type {
 } from "./protocol"
 import { plotFunctionActionSchema } from "./protocol"
 
-type TrackedKind = "geo" | "draw" | "line" | "arrow" | "text" | "group" | typeof MATH_SHAPE_TYPE | typeof GRAPH_SHAPE_TYPE
+type TrackedKind = "geo" | "draw" | "line" | "arrow" | "text" | "group" | "image" | typeof MATH_SHAPE_TYPE | typeof GRAPH_SHAPE_TYPE
 
 /** The vocabulary used in a board summary - finer-grained than `TrackedKind` (which collapses freehand/polygon into tldraw's "draw"). */
 export type SummaryKind = "shape" | "freehand" | "polygon" | "line" | "arrow" | "text" | "equation" | "plot" | "graph" | "apparatus" | "incline"
@@ -84,6 +91,11 @@ export interface TrackedObjectSummary {
 
 /** Narrowest a paragraph is ever wrapped (page units) - narrower reads as a one-word-per-line column. */
 const MIN_PROSE_WIDTH = 320
+/** The notes column: its distance from the drawing, and the space between notes. */
+const NOTES_GAP = 48
+const NOTES_LINE_GAP = 16
+/** Wrap width for a longer note in the column. */
+const NOTES_WIDTH = 460
 /** Space kept between writing and the edge of a box it is written in. */
 const BOX_PADDING = 14
 
@@ -173,7 +185,7 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
       const id = shape.meta.recifeObjectId
       const kind = shape.meta.recifeKind as SummaryKind
       if (typeof id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(id) && kinds.includes(kind) &&
-        ["geo", "draw", "line", "arrow", "text", MATH_SHAPE_TYPE, GRAPH_SHAPE_TYPE, "group"].includes(shape.type)) {
+        ["geo", "draw", "line", "arrow", "text", MATH_SHAPE_TYPE, GRAPH_SHAPE_TYPE, "group", "image"].includes(shape.type)) {
         this.objects.set(id, { tlId: shape.id, kind: shape.type as TrackedKind, summaryKind: kind })
       }
     }
@@ -181,6 +193,8 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
 
   private track(id: string, kind: TrackedKind, summaryKind: SummaryKind, label?: string): TLShapeId {
     const tlId = createShapeId(id)
+    // Everything but writing is part of what this lesson's notes sit beside.
+    if (summaryKind !== "text" && summaryKind !== "equation") this.planVisuals.add(tlId)
     this.objects.set(id, { tlId, kind, summaryKind, ...(label ? { label } : {}) })
     return tlId
   }
@@ -305,15 +319,81 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
   writeText(action: WriteTextAction): void {
     // All tutor writing is typeset (any $...$ maths included) on a solid backing, so it reads clearly over other content.
     const tlId = this.track(action.id, MATH_SHAPE_TYPE, "text", action.text)
-    const position = this.followPlanShift(action.position)
+    const requested = this.followPlanShift(action.position)
     // Writing that starts inside a box (e.g. a "Model answer" frame) fills that box's width; any
     // other paragraph is never squeezed into a narrow column, whatever width was asked for.
-    const box = this.boxAround(position)
+    const box = this.boxAround(requested)
+    const position = box ? requested : this.notesPosition(requested, action.text)
+    const flowed = position !== requested
     const maxW = box
       ? Math.max(MIN_PROSE_WIDTH / 2, box.x + box.w - position.x - BOX_PADDING)
-      : action.w !== undefined && action.text.length > 40 ? Math.max(action.w, MIN_PROSE_WIDTH) : action.w ?? 0
+      : action.w !== undefined && action.text.length > 40 ? Math.max(action.w, MIN_PROSE_WIDTH)
+      : flowed && action.text.length > 60 ? NOTES_WIDTH : action.w ?? 0
     this.createMath(tlId, position, action.text, "mixed", action.color ?? "black", action.size ?? "m", maxW)
     if (box) this.growBoxToFit(box.id, tlId)
+    if (flowed) this.advanceNotes(tlId)
+  }
+
+  /** This lesson's notes column: where the next note goes. */
+  private notes: { x: number; y: number; count: number } | null = null
+  /** Everything this lesson has drawn other than writing - what its notes sit beside. */
+  private planVisuals = new Set<TLShapeId>()
+
+  private planDiagramBounds(): { x: number; y: number; w: number; h: number } | null {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+    for (const id of this.planVisuals) {
+      const b = this.editor.getShapePageBounds(id)
+      if (!b) continue
+      minX = Math.min(minX, b.x)
+      minY = Math.min(minY, b.y)
+      maxX = Math.max(maxX, b.x + b.w)
+      maxY = Math.max(maxY, b.y + b.h)
+    }
+    return minX === Infinity ? null : { x: minX, y: minY, w: maxX - minX, h: maxY - minY }
+  }
+
+  /**
+   * THE NOTES RULE: a lesson's explanations and lines of working go in one column, right beside what
+   * the lesson drew (or the question, if it drew nothing), top-aligned with it and stacked in the order
+   * they're written - never scattered, split up or far away, whatever coordinates the model gave. A new
+   * figure further right starts a fresh column beside it. Short labels placed on or right next to the
+   * drawing (e.g. "θ", "Particle A") keep their position.
+   */
+  private notesPosition(requested: { x: number; y: number }, text: string): { x: number; y: number } {
+    // Beside what this lesson drew - or, if it only marked the question, beside the question.
+    const drawn = this.planDiagramBounds()
+    const diagram = drawn ?? this.imageRegion
+    const isShortLabel = !text.includes("\n") && text.trim().split(/\s+/).length <= 3 && text.length <= 28
+    if (isShortLabel && diagram &&
+      requested.x >= diagram.x - 60 && requested.x <= diagram.x + diagram.w + 60 &&
+      requested.y >= diagram.y - 60 && requested.y <= diagram.y + diagram.h + 60) {
+      return requested
+    }
+    if (!diagram) {
+      // Nothing to sit beside: the first note sets the column, the rest stack under it.
+      this.notes ??= { x: requested.x, y: requested.y, count: 0 }
+    } else {
+      let columnX = diagram.x + diagram.w + NOTES_GAP
+      // Never over the question photo: a column that would run across it starts just past it instead.
+      const q = this.imageRegion
+      if (drawn && q) {
+        const columnBottom = diagram.y + Math.max(diagram.h, 300)
+        const overlapsVertically = diagram.y < q.y + q.h && columnBottom > q.y
+        const overlapsHorizontally = columnX < q.x + q.w && columnX + NOTES_WIDTH > q.x
+        if (overlapsVertically && overlapsHorizontally) columnX = q.x + q.w + NOTES_GAP
+      }
+      if (!this.notes || columnX > this.notes.x + 1) this.notes = { x: columnX, y: diagram.y, count: 0 }
+    }
+    // A new part's heading gets a little more space above it.
+    const headingGap = this.notes.count > 0 && /^\s*\*\*/.test(text) ? 20 : 0
+    return { x: this.notes.x, y: this.notes.y + headingGap }
+  }
+
+  /** The next note goes under this one. */
+  private advanceNotes(tlId: TLShapeId): void {
+    const b = this.editor.getShapePageBounds(tlId)
+    if (!this.notes || !b) return
+    this.notes = { x: this.notes.x, y: b.y + b.h + NOTES_LINE_GAP, count: this.notes.count + 1 }
   }
 
   /** The smallest unturned rectangle that the point is inside - the box some writing is meant to go in. */
@@ -346,7 +426,11 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
 
   writeEquation(action: WriteEquationAction): void {
     const tlId = this.track(action.id, MATH_SHAPE_TYPE, "equation", action.expression)
-    this.createMath(tlId, this.followPlanShift(action.position), action.expression, "latex", action.color ?? "black", action.size ?? "m", 0)
+    const requested = this.followPlanShift(action.position)
+    // A line of working goes in the lesson's notes column (unless it's written inside a box).
+    const position = this.boxAround(requested) ? requested : this.notesPosition(requested, action.expression)
+    this.createMath(tlId, position, action.expression, "latex", action.color ?? "black", action.size ?? "m", 0)
+    if (position !== requested) this.advanceNotes(tlId)
   }
 
   private createMath(
@@ -676,6 +760,182 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
     this.editor.updateShape({ id: tlId, type: "geo", meta: { ...this.editor.getShape(tlId)?.meta, recifeSlope: slope } })
   }
 
+  /**
+   * Copies a figure out of the question photo instead of redrawing it: a new image shape showing the
+   * same picture, cropped to the figure, so it is exactly as printed. Each named part becomes a faint
+   * dotted anchor at the matching place on the copy, with its own id - forces, strings and labels then
+   * attach to the real figure. A part on a slope remembers the slope, so named directions work.
+   */
+  copyFigure(action: CopyFigureAction): void {
+    const region = this.imageRegion
+    if (!region) throw new Error("There is no question image to copy a figure from. Draw the diagram with the drawing actions instead.")
+    // Only the figure: any line of the question's text (read by OCR) that the box swallowed is cut away.
+    // ...then tightened to the figure's ink, so the copy isn't padded with blank paper.
+    const box = this.imageText ? tightenToInk(trimProseFromFigure(action.box, this.imageText), this.imageText.ink) : action.box
+    const area = imageBoxToPage(box, region)
+    // The photo on the board that the figure is in (the one it overlaps most).
+    let photo: { id: TLShapeId; bounds: { x: number; y: number; w: number; h: number }; overlap: number } | undefined
+    for (const shape of this.editor.getCurrentPageShapes()) {
+      if (shape.type !== "image" || shape.rotation !== 0) continue
+      const b = this.editor.getShapePageBounds(shape)
+      const overlap = b ? figureOverlap(area, b) : 0
+      if (b && overlap > 0 && (!photo || overlap > photo.overlap)) photo = { id: shape.id, bounds: { x: b.x, y: b.y, w: b.w, h: b.h }, overlap }
+    }
+    const source = photo && this.editor.getShape(photo.id)
+    if (!photo || source?.type !== "image" || !source.props.assetId) {
+      throw new Error("Couldn't find the question photo on the board to copy the figure from. Draw the diagram instead.")
+    }
+    const at = this.followPlanShift(action.position)
+    const size = copySize(area, action.width)
+    const tlId = this.track(action.id, "image", "shape", `figure copied from the question${action.label ? ` (${action.label})` : ""}`)
+    this.editor.createShapes([{
+      id: tlId, type: "image", x: at.x, y: at.y,
+      props: {
+        assetId: source.props.assetId, w: size.w, h: size.h,
+        crop: cropFor(area, photo.bounds, source.props.crop ?? null),
+        playing: true, url: "", flipX: false, flipY: false, altText: "Figure from the question",
+      },
+    }])
+    const copy = { x: at.x, y: at.y, w: size.w, h: size.h }
+    for (const part of action.parts ?? []) {
+      if (this.objects.has(part.id)) throw new Error(`Object id "${part.id}" already exists`)
+      const r = partOnCopy(imageBoxToPage(part.box, region), area, copy)
+      const partTl = this.track(part.id, "geo", "shape", "part of the copied figure")
+      // A part on a slope is a tilted block: recover its own rectangle from its box, so forces start on it.
+      const tilted = part.slope ? tiltedRectIn(r, part.slope.angle) : null
+      const placement = tilted
+        ? turnedAboutCentre(tilted.centre, tilted.w, tilted.h, part.slope!.downhill === "right" ? -part.slope!.angle : part.slope!.angle)
+        : { x: r.x, y: r.y, rotation: 0 }
+      this.editor.createShapes([{
+        id: partTl, type: "geo", ...placement, opacity: 0.5,
+        props: {
+          geo: "rectangle", w: Math.max(4, tilted?.w ?? r.w), h: Math.max(4, tilted?.h ?? r.h),
+          color: "grey", fill: "none", dash: "dotted", size: "s", richText: toRichText(""),
+        },
+      }])
+      if (part.slope) {
+        this.editor.updateShape({ id: partTl, type: "geo", meta: {
+          ...this.editor.getShape(partTl)?.meta, recifeSlope: { angle: part.slope.angle, drawnAngle: part.slope.angle, downhill: part.slope.downhill },
+        } })
+      }
+    }
+    if (action.label) this.labels.set(tlId, action.label)
+  }
+
+  /**
+   * A pulley: the wheel and an axle, plus its support - a ceiling bar and rod when hung at `centre`,
+   * or a short bracket to the corner when clamped `at` a table edge or the top of a slope.
+   */
+  drawPulley(action: DrawPulleyAction): void {
+    const r = action.radius ?? 26
+    let wheel: Wheel
+    let bracketTo: { x: number; y: number } | null = null
+    if (action.at) {
+      const target = this.objects.get(action.at.object)
+      if (!target) throw new Error(`Unknown object "${action.at.object}" to put the pulley at: draw it first`)
+      const slope = this.slopeMeta(target.tlId)
+      const triangle = slope && this.editor.getShapePageBounds(createShapeId(`${action.at.object}:slope`))
+      if (action.at.corner === "slope_top" || (slope && triangle)) {
+        if (!slope || !triangle) throw new Error(`"${action.at.object}" is not a slope; use corner "top_left" or "top_right"`)
+        const g = inclineGeometry({ x: triangle.x, y: triangle.y }, triangle.w, slope.angle, slope.downhill)
+        // Just beyond the top of the slope, on the uphill side.
+        wheel = pulleyAtCorner(g.top, slope.downhill === "right" ? "left" : "right", r)
+        bracketTo = g.top
+      } else {
+        const b = this.getObjectBounds(action.at.object)!
+        const corner = action.at.corner === "top_left" ? { x: b.x, y: b.y } : { x: b.x + b.w, y: b.y }
+        wheel = pulleyAtCorner(corner, action.at.corner === "top_left" ? "left" : "right", r)
+        bracketTo = corner
+      }
+    } else {
+      wheel = { cx: action.centre!.x, cy: action.centre!.y, r }
+    }
+    const wheelId = createShapeId(`${action.id}:wheel`)
+    const axleId = createShapeId(`${action.id}:axle`)
+    const partIds: TLShapeId[] = [wheelId, axleId]
+    this.editor.createShapes([
+      { id: wheelId, type: "geo", x: wheel.cx - r, y: wheel.cy - r, props: { geo: "ellipse", w: 2 * r, h: 2 * r, color: "black", fill: "none", dash: "solid", size: "m", richText: toRichText("") } },
+      { id: axleId, type: "geo", x: wheel.cx - 3, y: wheel.cy - 3, props: { geo: "ellipse", w: 6, h: 6, color: "black", fill: "solid", dash: "solid", size: "s", richText: toRichText("") } },
+    ])
+    if (bracketTo) {
+      const bracketId = createShapeId(`${action.id}:bracket`)
+      this.createOutline(bracketId, [{ x: wheel.cx, y: wheel.cy }, bracketTo], false, { color: "black", fill: "none", size: "m" })
+      partIds.push(bracketId)
+    } else {
+      // Hung from a ceiling: a rod up from the axle to a hatched bar.
+      const ceilingY = wheel.cy - r - 45
+      const rodId = createShapeId(`${action.id}:rod`)
+      const ceilingId = createShapeId(`${action.id}:ceiling`)
+      this.createOutline(rodId, [{ x: wheel.cx, y: wheel.cy }, { x: wheel.cx, y: ceilingY }], false, { color: "black", fill: "none", size: "m" })
+      this.createOutline(ceilingId, [{ x: wheel.cx - 2.4 * r, y: ceilingY }, { x: wheel.cx + 2.4 * r, y: ceilingY }], false, { color: "black", fill: "none", size: "m" })
+      partIds.push(rodId, ceilingId)
+      for (let i = 0; i < 5; i++) {
+        const hatchId = createShapeId(`${action.id}:hatch-${i}`)
+        const x = wheel.cx - 2 * r + i * r
+        this.createOutline(hatchId, [{ x, y: ceilingY }, { x: x + r * 0.5, y: ceilingY - r * 0.5 }], false, { color: "black", fill: "none", size: "s" })
+        partIds.push(hatchId)
+      }
+    }
+    const tlId = this.track(action.id, "group", "shape", `pulley${action.label ? ` (${action.label})` : ""}`)
+    this.editor.groupShapes(partIds, { groupId: tlId, select: false })
+    if (action.label) this.labels.set(tlId, action.label)
+  }
+
+  /** The wheel of a pulley drawn with draw_pulley (it may have moved since). */
+  private wheelOf(pulleyId: string): Wheel | undefined {
+    const b = this.editor.getShapePageBounds(createShapeId(`${pulleyId}:wheel`))
+    return b ? { cx: b.x + b.w / 2, cy: b.y + b.h / 2, r: b.w / 2 } : undefined
+  }
+
+  /** A block or particle - hanging exactly under one side of a pulley, or at `position` (its top-left). */
+  drawMass(action: DrawMassAction): void {
+    const particle = action.shape === "particle"
+    const size = action.size ?? (particle ? 40 : 50)
+    const w = particle ? size : size * 1.15
+    const h = size
+    let centre: { x: number; y: number }
+    if (action.hang) {
+      const wheel = this.wheelOf(action.hang.pulley)
+      if (!wheel) throw new Error(`"${action.hang.pulley}" is not a pulley. Draw it with draw_pulley first.`)
+      centre = hangingMassCentre(wheel, action.hang.side, action.hang.drop ?? 160, h)
+    } else {
+      const at = this.followPlanShift(action.position!)
+      centre = { x: at.x + w / 2, y: at.y + h / 2 }
+    }
+    this.createGeo({
+      type: "create_shape", id: action.id, shape: particle ? "ellipse" : "rectangle",
+      x: centre.x - w / 2, y: centre.y - h / 2, w, h,
+      color: action.color ?? "black", fill: action.fill ?? "none", dash: "solid", size: "m",
+      ...(action.label ? { label: action.label } : {}),
+    })
+  }
+
+  /**
+   * A string joining two objects, over a pulley if given. Each end starts on its object's outline,
+   * aimed at where the string meets the wheel, so a mass hanging under the wheel's edge gets an
+   * exactly vertical string from its top; the part on the wheel follows its rim over the top.
+   */
+  drawString(action: DrawStringAction): void {
+    const wheel = action.over ? this.wheelOf(action.over) : undefined
+    if (action.over && !wheel) throw new Error(`"${action.over}" is not a pulley. Draw it with draw_pulley first.`)
+    const endOn = (objectId: string, toward: { x: number; y: number } | null) => {
+      const frame = this.getObjectFrame(objectId)
+      if (!frame) throw new Error(`Unknown object "${objectId}" for the string: draw it first`)
+      const centre = { x: frame.cx, y: frame.cy }
+      // Aim at the wheel's tangent point (seen from the object's centre), or at the other object.
+      const target = wheel ? tangentPoint(centre, wheel) : toward!
+      const angle = (Math.atan2(-(target.y - centre.y), target.x - centre.x) * 180) / Math.PI
+      return forceArrow(frame, angle, 0).start
+    }
+    const fromFrame = this.getObjectFrame(action.from)
+    const toFrame = this.getObjectFrame(action.to)
+    if (!fromFrame || !toFrame) throw new Error(`Draw both ends of the string ("${action.from}", "${action.to}") first`)
+    const a = endOn(action.from, { x: toFrame.cx, y: toFrame.cy })
+    const b = endOn(action.to, { x: fromFrame.cx, y: fromFrame.cy })
+    const tlId = this.track(action.id, "draw", "line", `string from ${action.from}${action.over ? ` over ${action.over}` : ""} to ${action.to}`)
+    this.createOutline(tlId, stringPath(a, b, wheel), false, { color: action.color ?? "black", fill: "none", size: "s" })
+  }
+
   /** The slope an object is, or rests on. */
   getObjectSlope(id: string): { drawnAngle: number; downhill: "left" | "right" } | undefined {
     const tracked = this.objects.get(id)
@@ -742,6 +1002,8 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
       }])
     })
     if (!single) this.editor.groupShapes(partIds, { groupId: tlId, select: false })
+    // On the question, not part of the lesson's drawing (see markImage).
+    this.planVisuals.delete(tlId)
     if (action.label) this.labels.set(tlId, action.label, action.color)
   }
 
@@ -753,14 +1015,16 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
     if (action.style === "underline") {
       const { start, end } = underlineFor(target)
       this.drawLine({ type: "draw_line", id: action.id, points: [start, end], color, size: "s" })
-      return
+    } else {
+      const outline = action.style === "circle" ? circleOutline(target) : boxOutline(target)
+      this.createGeo({
+        type: "create_shape", id: action.id, shape: action.style === "circle" ? "ellipse" : "rectangle",
+        x: outline.x, y: outline.y, w: Math.max(outline.w, 2), h: Math.max(outline.h, 2),
+        color, fill: "none", dash: "solid", size: "s", ...(action.label ? { label: action.label } : {}),
+      })
     }
-    const outline = action.style === "circle" ? circleOutline(target) : boxOutline(target)
-    this.createGeo({
-      type: "create_shape", id: action.id, shape: action.style === "circle" ? "ellipse" : "rectangle",
-      x: outline.x, y: outline.y, w: Math.max(outline.w, 2), h: Math.max(outline.h, 2),
-      color, fill: "none", dash: "solid", size: "s", ...(action.label ? { label: action.label } : {}),
-    })
+    // A mark sits on the question, not in the lesson's drawing: the notes go beside the question as a whole.
+    this.planVisuals.delete(createShapeId(action.id))
   }
 
   /**
@@ -796,6 +1060,8 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
   /** Called at the start of each lesson: earlier lessons' graph moves don't apply to new writing. */
   beginPlan(): void {
     this.planShifts = []
+    this.planVisuals = new Set()
+    this.notes = null
   }
 
   /** Where a point the model planned near a since-moved graph should actually go. */
@@ -874,6 +1140,7 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
       [MATH_SHAPE_TYPE]: ["color", "size", "text", "w", "opacity"],
       [GRAPH_SHAPE_TYPE]: ["w", "h", "opacity"],
       group: ["opacity"],
+      image: ["opacity"],
       arrow: ["color", "size", "dash", "text", "opacity"],
       line: ["color", "size", "dash", "opacity"],
       draw: ["color", "size", "dash", "fill", "opacity"],

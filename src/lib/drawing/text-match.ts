@@ -22,6 +22,15 @@ export interface OcrResult {
   width: number
   height: number
   words: OcrWord[]
+  /** Where there's ink (anything that isn't blank paper), as a coarse grid over the image - for cropping figures tight. */
+  ink?: InkGrid
+}
+
+export interface InkGrid {
+  cols: number
+  rows: number
+  /** Row-major, 1 where the cell has ink. */
+  cells: Uint8Array
 }
 
 export interface PixelRect { x: number; y: number; w: number; h: number }

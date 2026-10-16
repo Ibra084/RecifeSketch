@@ -265,6 +265,69 @@ export const markImageActionSchema = z.strictObject({
   label: textSchema.optional(),
 })
 
+const imageBoxSchema = z.tuple([
+  z.number().min(0).max(1000), z.number().min(0).max(1000), z.number().min(0).max(1000), z.number().min(0).max(1000),
+]).refine(([ymin, xmin, ymax, xmax]) => ymax > ymin && xmax > xmin, "box must be [ymin, xmin, ymax, xmax] with max > min")
+
+/**
+ * Copies a figure out of the question image - exactly as printed - to
+ * `position`, enlarged. `box` is the figure's box in that image (0-1000, as
+ * mark_image). Each named part (a mass, a block, a pulley...) gets an anchor
+ * with its own id on the copy, so forces, strings and labels attach to it.
+ */
+export const copyFigureActionSchema = z.strictObject({
+  type: z.literal("copy_figure"),
+  id: objectIdSchema,
+  box: imageBoxSchema,
+  position: pointSchema,
+  width: z.number().finite().min(120).max(1400).optional(),
+  parts: z.array(z.strictObject({
+    id: objectIdSchema,
+    box: imageBoxSchema,
+    /** For a part resting on a slope in the figure: so "up_slope", "normal"... work on it. */
+    slope: z.strictObject({ angle: z.number().min(1).max(89), downhill: z.enum(["left", "right"]) }).optional(),
+  })).max(12).optional(),
+  label: textSchema.optional(),
+})
+
+/** A pulley wheel with its support: hung from a ceiling at `centre`, or clamped at a corner of a table or the top of a slope. */
+export const drawPulleyActionSchema = z.strictObject({
+  type: z.literal("draw_pulley"),
+  id: objectIdSchema,
+  centre: pointSchema.optional(),
+  at: z.strictObject({ object: objectIdSchema, corner: z.enum(["top_left", "top_right", "slope_top"]) }).optional(),
+  radius: z.number().finite().min(10).max(120).optional(),
+  label: textSchema.optional(),
+}).refine((a) => (a.centre === undefined) !== (a.at === undefined), "draw_pulley needs exactly one of centre or at")
+
+/** A mass (block or particle), hanging from one side of a pulley or placed freely. */
+export const drawMassActionSchema = z.strictObject({
+  type: z.literal("draw_mass"),
+  id: objectIdSchema,
+  hang: z.strictObject({
+    pulley: objectIdSchema,
+    side: z.enum(["left", "right"]),
+    /** From the wheel's centre down to the top of the mass. */
+    drop: z.number().finite().min(30).max(900).optional(),
+  }).optional(),
+  position: pointSchema.optional(),
+  shape: z.enum(["block", "particle"]).optional(),
+  size: z.number().finite().min(16).max(200).optional(),
+  color: colorSchema.optional(),
+  fill: fillStyleSchema.optional(),
+  label: textSchema.optional(),
+}).refine((a) => (a.hang === undefined) !== (a.position === undefined), "draw_mass needs exactly one of hang or position")
+
+/** A string or rope joining two objects, optionally passing over a pulley - its path is computed to meet both exactly. */
+export const drawStringActionSchema = z.strictObject({
+  type: z.literal("draw_string"),
+  id: objectIdSchema,
+  from: objectIdSchema,
+  to: objectIdSchema,
+  over: objectIdSchema.optional(),
+  color: colorSchema.optional(),
+})
+
 /**
  * Highlights printed words in the question image, exactly: the words are
  * found by OCR in the image and the highlight drawn on their real pixel
@@ -477,6 +540,10 @@ export const drawingActionSchema = z.discriminatedUnion("type", [
   updateGraphActionSchema,
   markImageActionSchema,
   highlightTextActionSchema,
+  copyFigureActionSchema,
+  drawPulleyActionSchema,
+  drawMassActionSchema,
+  drawStringActionSchema,
   drawApparatusActionSchema,
   drawInclineActionSchema,
   drawOnInclineActionSchema,
@@ -506,6 +573,10 @@ export type DrawForceAction = z.infer<typeof drawForceActionSchema>
 export type DrawGraphAction = z.infer<typeof drawGraphActionSchema>
 export type MarkImageAction = z.infer<typeof markImageActionSchema>
 export type HighlightTextAction = z.infer<typeof highlightTextActionSchema>
+export type CopyFigureAction = z.infer<typeof copyFigureActionSchema>
+export type DrawPulleyAction = z.infer<typeof drawPulleyActionSchema>
+export type DrawMassAction = z.infer<typeof drawMassActionSchema>
+export type DrawStringAction = z.infer<typeof drawStringActionSchema>
 export type DrawApparatusAction = z.infer<typeof drawApparatusActionSchema>
 export type DrawInclineAction = z.infer<typeof drawInclineActionSchema>
 export type DrawOnInclineAction = z.infer<typeof drawOnInclineActionSchema>
@@ -543,6 +614,10 @@ export const CREATING_ACTION_TYPES = [
   "draw_graph",
   "mark_image",
   "highlight_text",
+  "copy_figure",
+  "draw_pulley",
+  "draw_mass",
+  "draw_string",
   "draw_apparatus",
   "draw_incline",
   "draw_on_incline",

@@ -14,6 +14,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { DrawingEngine, type DrawingRunResult } from "@/lib/drawing/engine"
 import { drawingProgramSchema } from "@/lib/drawing/protocol"
 import { TldrawDrawingAdapter } from "@/lib/drawing/tldraw-adapter"
+import { recognizeWords } from "@/lib/ocr/recognize-words"
 import { buildRendererDemoSequence } from "@/lib/drawing/playback/demo-sequence"
 import { DrawingPlayer } from "@/lib/drawing/playback/player"
 import { TldrawShapeAnimator } from "@/lib/drawing/playback/tldraw-animator"
@@ -121,6 +122,8 @@ export function DrawingHarness() {
     ;(window as unknown as { harnessEditor?: Editor }).harnessEditor = editor
     adapterRef.current?.dispose()
     adapterRef.current = new TldrawDrawingAdapter(editor)
+    ;(window as unknown as { harnessAdapter?: TldrawDrawingAdapter }).harnessAdapter = adapterRef.current
+    ;(window as unknown as { harnessOcr?: typeof recognizeWords }).harnessOcr = recognizeWords
     engineRef.current = new DrawingEngine(adapterRef.current)
     animatorRef.current = new TldrawShapeAnimator(editor)
   }

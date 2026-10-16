@@ -15,6 +15,10 @@ import type {
   DrawGraphAction,
   MarkImageAction,
   HighlightTextAction,
+  CopyFigureAction,
+  DrawPulleyAction,
+  DrawMassAction,
+  DrawStringAction,
   DrawApparatusAction,
   DrawInclineAction,
   DrawOnInclineAction,
@@ -42,6 +46,10 @@ export type FakeAdapterCall =
   | { method: "updateGraph"; action: UpdateGraphAction }
   | { method: "markImage"; action: MarkImageAction }
   | { method: "highlightText"; action: HighlightTextAction }
+  | { method: "copyFigure"; action: CopyFigureAction }
+  | { method: "drawPulley"; action: DrawPulleyAction }
+  | { method: "drawMass"; action: DrawMassAction }
+  | { method: "drawString"; action: DrawStringAction }
   | { method: "drawApparatus"; action: DrawApparatusAction }
   | { method: "drawIncline"; action: DrawInclineAction }
   | { method: "drawOnIncline"; action: DrawOnInclineAction }
@@ -172,6 +180,35 @@ export class FakeDrawingAdapter implements DrawingAdapter {
   highlightText(action: HighlightTextAction): void {
     this.record({ method: "highlightText", action })
     this.bounds.set(action.id, { x: 0, y: 0, w: 100, h: 20 })
+  }
+
+  copyFigure(action: CopyFigureAction): void {
+    this.record({ method: "copyFigure", action })
+    const w = action.width ?? 400
+    this.bounds.set(action.id, { x: action.position.x, y: action.position.y, w, h: w })
+    for (const part of action.parts ?? []) {
+      this.bounds.set(part.id, { x: action.position.x, y: action.position.y, w: 40, h: 40 })
+      if (part.slope) this.slopes.set(part.id, { drawnAngle: part.slope.angle, downhill: part.slope.downhill })
+    }
+  }
+
+  drawPulley(action: DrawPulleyAction): void {
+    this.record({ method: "drawPulley", action })
+    const c = action.centre ?? { x: 0, y: 0 }
+    const r = action.radius ?? 26
+    this.bounds.set(action.id, { x: c.x - r, y: c.y - r, w: 2 * r, h: 2 * r })
+  }
+
+  drawMass(action: DrawMassAction): void {
+    this.record({ method: "drawMass", action })
+    const at = action.position ?? { x: 0, y: 0 }
+    const s = action.size ?? 44
+    this.bounds.set(action.id, { x: at.x, y: at.y, w: s, h: s })
+  }
+
+  drawString(action: DrawStringAction): void {
+    this.record({ method: "drawString", action })
+    this.bounds.set(action.id, { x: 0, y: 0, w: 1, h: 1 })
   }
 
   moveObject(id: string, position: { x: number; y: number }): void {

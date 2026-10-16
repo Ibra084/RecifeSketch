@@ -10,6 +10,7 @@ import { toDrawingSequence, type TeachingPlan } from "@/lib/ai/teaching-protocol
 import type { UsageEstimate } from "@/lib/ai/usage-tracker"
 import type { PlaybackSnapshot } from "@/lib/drawing/playback/types"
 import type { TrackedObjectSummary } from "@/lib/drawing/tldraw-adapter"
+import type { OcrResult } from "@/lib/drawing/text-match"
 
 export type TutorPhase = "idle" | "thinking" | "drawing"
 
@@ -33,7 +34,9 @@ export interface WhiteboardController {
    * Plays a sequence; step commentary is spoken beside the orb by the controller.
    * `imageRegion` is where the image the AI was shown sits on the board, so its marks land exactly.
    */
-  play(sequence: ReturnType<typeof toDrawingSequence>, stepCommentary: string[], imageRegion?: QuestionSource["region"]): Promise<PlaybackSnapshot>
+  play(sequence: ReturnType<typeof toDrawingSequence>, stepCommentary: string[], imageRegion?: QuestionSource["region"], imageText?: OcrResult | null): Promise<PlaybackSnapshot>
+  /** The printed words in a board area with their exact pixel boxes (OCR), or null if they couldn't be read. */
+  readImageText(region: NonNullable<QuestionSource["region"]>): Promise<OcrResult | null>
   cancel(): void
   getVisualObjects(): TrackedObjectSummary[]
   getLayout(): TutorContext["layout"]
@@ -157,6 +160,9 @@ export function useTutor(board: WhiteboardController) {
         if (region) source = { ...stored.source, region }
       }
 
+      // Read the image's printed words (OCR) while the tutor thinks: exact keyword highlights and figure crops use them.
+      const imageTextPromise = source?.image && source.region ? board.readImageText(source.region).catch(() => null) : Promise.resolve(null)
+
       const context: TutorContext = {
         objects: board.getVisualObjects(),
         history: historyRef.current,
@@ -197,7 +203,9 @@ export function useTutor(board: WhiteboardController) {
       const commentary = plan.steps.map((step) => step.commentary)
       setPhaseBoth("drawing")
       try {
-        const outcome = await board.play(toDrawingSequence(plan), commentary, source?.image ? source.region : undefined)
+        // OCR normally finishes well before the answer arrives; never hold the lesson up for long waiting on it.
+        const imageText = await Promise.race([imageTextPromise, new Promise<null>((resolve) => window.setTimeout(() => resolve(null), 8000))])
+        const outcome = await board.play(toDrawingSequence(plan), commentary, source?.image ? source.region : undefined, imageText)
         historyRef.current = [
           ...historyRef.current,
           { question: question.slice(0, 500), concept: plan.concept.slice(0, 200), explanation: playbackExplanation(plan, outcome) },

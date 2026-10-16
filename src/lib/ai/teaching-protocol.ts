@@ -85,6 +85,22 @@ export function resolveTeachingPlanIds(plan: TeachingPlan, existingIds: readonly
         known.add(resolvedId)
         // A force belongs to the object this plan calls `on` - follow that object if it was renamed.
         if (action.type === "draw_force") return { ...action, id: resolvedId, on: renames.get(action.on) ?? action.on }
+        const renamed = (id: string) => renames.get(id) ?? id
+        // A copied figure's parts are new objects too: keep their ids unique, and remember any renames for later references.
+        if (action.type === "copy_figure" && action.parts) {
+          const parts = action.parts.map((part) => {
+            const partId = uniqueIdFor(part.id)
+            if (partId !== part.id) renames.set(part.id, partId)
+            known.add(partId)
+            return { ...part, id: partId }
+          })
+          return { ...action, id: resolvedId, parts }
+        }
+        if (action.type === "draw_pulley" && action.at) return { ...action, id: resolvedId, at: { ...action.at, object: renamed(action.at.object) } }
+        if (action.type === "draw_mass" && action.hang) return { ...action, id: resolvedId, hang: { ...action.hang, pulley: renamed(action.hang.pulley) } }
+        if (action.type === "draw_string") {
+          return { ...action, id: resolvedId, from: renamed(action.from), to: renamed(action.to), ...(action.over ? { over: renamed(action.over) } : {}) }
+        }
         if (action.type === "draw_on_incline") return { ...action, id: resolvedId, incline: renames.get(action.incline) ?? action.incline }
         if (action.type === "draw_apparatus") {
           return {
@@ -106,7 +122,7 @@ export function resolveTeachingPlanIds(plan: TeachingPlan, existingIds: readonly
 /** Actions that put a picture on the board - not just words. */
 const VISUAL_ACTIONS = new Set<DrawingAction["type"]>([
   "create_shape", "create_freehand_path", "create_polygon", "draw_line", "draw_arrow", "draw_force",
-  "draw_curve", "draw_repeated_curve", "plot_function", "update_plot", "draw_graph", "update_graph", "mark_image", "highlight_text", "draw_apparatus", "draw_incline", "draw_on_incline",
+  "draw_curve", "draw_repeated_curve", "plot_function", "update_plot", "draw_graph", "update_graph", "mark_image", "highlight_text", "copy_figure", "draw_pulley", "draw_mass", "draw_string", "draw_apparatus", "draw_incline", "draw_on_incline",
 ])
 const GRAPH_ACTIONS = new Set<DrawingAction["type"]>(["draw_graph", "update_graph", "plot_function", "update_plot"])
 const GRAPH_TOPIC = /\b(graphs?|sketch|plot|curves?|asymptotes?|parabola|gradient|intercepts?|turning points?|transformations?|reciprocal|modulus|axes|coordinates)\b|\by\s*=|\bf\s*\(\s*x\s*\)/i

@@ -1,5 +1,5 @@
 import { z } from "zod"
-import { coordinateSchema, dimensionSchema, objectIdSchema, regionSchema } from "../drawing/protocol"
+import { COORDINATE_LIMIT, coordinateSchema, DIMENSION_LIMIT, DIMENSION_MIN, dimensionSchema, objectIdSchema, regionSchema } from "../drawing/protocol"
 
 /**
  * The compact, bounded context a client sends with each follow-up
@@ -129,3 +129,73 @@ export function formatContextForPrompt(context: TutorContext | undefined): strin
   return parts.join("\n")
 }
 
+
+const clampNumber = (value: unknown, min: number, max: number, fallback: number) =>
+  typeof value === "number" && Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback
+
+/** A rectangle forced into the board's allowed range: positions within ±COORDINATE_LIMIT, sizes 1..DIMENSION_LIMIT. */
+function clampRegion(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object") return raw
+  const r = raw as Record<string, unknown>
+  return {
+    x: clampNumber(r.x, -COORDINATE_LIMIT, COORDINATE_LIMIT, 0),
+    y: clampNumber(r.y, -COORDINATE_LIMIT, COORDINATE_LIMIT, 0),
+    w: clampNumber(r.w, DIMENSION_MIN, DIMENSION_LIMIT, DIMENSION_MIN),
+    h: clampNumber(r.h, DIMENSION_MIN, DIMENSION_LIMIT, DIMENSION_MIN),
+  }
+}
+
+/** Keeps the items of an array that pass `schema` (after `fix`), up to `max`. */
+function validItems<T>(raw: unknown, schema: z.ZodType<T>, max: number, fix: (item: unknown) => unknown = (item) => item): T[] {
+  if (!Array.isArray(raw)) return []
+  return raw.flatMap((item) => {
+    const parsed = schema.safeParse(fix(item))
+    return parsed.success ? [parsed.data] : []
+  }).slice(-max)
+}
+
+/**
+ * The board context, made valid rather than rejected. It only helps the
+ * tutor place its drawing, so it must never stop a question being answered:
+ * a board zoomed far out (whose visible area is bigger than the size limit),
+ * content panned a long way, or one odd object are clamped or dropped, and
+ * only if nothing can be salvaged is the context left out altogether.
+ */
+export function sanitizeTutorContext(raw: unknown): TutorContext | undefined {
+  if (raw === undefined || raw === null) return undefined
+  const exact = tutorContextSchema.safeParse(raw)
+  if (exact.success) return exact.data
+  if (typeof raw !== "object") return undefined
+  const r = raw as Record<string, unknown>
+  const fixObject = (item: unknown) => {
+    if (!item || typeof item !== "object") return item
+    const o = item as Record<string, unknown>
+    return {
+      ...o, ...(clampRegion(o) as object),
+      ...(typeof o.label === "string" ? { label: o.label.slice(0, MAX_OBJECT_LABEL_LENGTH) } : {}),
+    }
+  }
+  const layout = r.layout && typeof r.layout === "object" ? (r.layout as Record<string, unknown>) : undefined
+  const candidate = {
+    objects: validItems(r.objects, objectSummarySchema, MAX_CONTEXT_OBJECTS, fixObject),
+    history: validItems(r.history, priorTurnSchema, MAX_HISTORY_TURNS),
+    ...(layout ? { layout: {
+      viewport: clampRegion(layout.viewport),
+      occupied: validItems(layout.occupied, regionSchema, 120, clampRegion),
+      freshArea: clampRegion(layout.freshArea),
+    } } : {}),
+  }
+  const selection = r.selection && typeof r.selection === "object" ? (r.selection as Record<string, unknown>) : undefined
+  const selectionObjects = selection ? validItems(selection.objects, selectionSchema.shape.objects.element, 30, (item) => {
+    if (!item || typeof item !== "object") return item
+    const o = item as Record<string, unknown>
+    return { ...o, bounds: clampRegion(o.bounds) }
+  }) : []
+  const withSelection = selectionObjects.length
+    ? { ...candidate, selection: { region: clampRegion(selection!.region), objects: selectionObjects } }
+    : candidate
+  const salvaged = tutorContextSchema.safeParse(withSelection)
+  if (salvaged.success) return salvaged.data
+  const withoutLayout = tutorContextSchema.safeParse({ objects: candidate.objects, history: candidate.history })
+  return withoutLayout.success ? withoutLayout.data : undefined
+}

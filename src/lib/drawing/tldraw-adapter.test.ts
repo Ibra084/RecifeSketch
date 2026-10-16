@@ -170,11 +170,47 @@ describe("tldraw adapter regression contracts (editor stub)", () => {
     expect(shapes.get("shape:m")).toMatchObject({ type: "recife-math", props: { mode: "mixed" } })
     expect(shapes.get("shape:p")).toMatchObject({ type: "recife-math", props: { mode: "mixed" } })
   })
-  it("moves a new line of working below existing writing instead of overlapping it", () => {
+  it("stacks lines of working in one column, in order, whatever positions the model gave", () => {
     const { adapter, shapes } = fixture()
+    adapter.beginPlan()
     adapter.writeEquation({ type: "write_equation", id: "a", position: { x: 0, y: 0 }, expression: "W = mg" })
     adapter.writeEquation({ type: "write_equation", id: "b", position: { x: 20, y: 10 }, expression: "F = ma" })
-    expect(shapes.get("shape:b")).toMatchObject({ x: 20, y: 40 }) // below a's 30-unit height, plus a 10-unit gap
+    adapter.writeEquation({ type: "write_equation", id: "c", position: { x: 900, y: -400 }, expression: "a = F/m" })
+    expect(shapes.get("shape:b")).toMatchObject({ x: 0, y: 46 }) // a's 30-unit height + a 16-unit gap
+    expect(shapes.get("shape:c")).toMatchObject({ x: 0, y: 92 }) // not flung far away
+  })
+  it("puts a lesson's notes in a column right beside what it drew, top-aligned with it", () => {
+    const { adapter, shapes } = fixture()
+    adapter.beginPlan()
+    adapter.createShape({ type: "create_shape", id: "block", shape: "rectangle", x: 100, y: 200, w: 300, h: 150 })
+    adapter.writeText({ type: "write_text", id: "n1", position: { x: 5000, y: 5000 }, text: "The block is in equilibrium so the forces balance." })
+    adapter.writeEquation({ type: "write_equation", id: "n2", position: { x: -300, y: 0 }, expression: "R = mg" })
+    expect(shapes.get("shape:n1")).toMatchObject({ x: 448, y: 200 }) // 48 to the right of the block, level with its top
+    expect(shapes.get("shape:n2")!.x).toBe(448)
+    expect(shapes.get("shape:n2")!.y).toBeGreaterThan(200)
+  })
+  it("puts notes beside a figure drawn below the question, level with the figure - not up by the question", () => {
+    const { adapter, shapes } = fixture()
+    adapter.beginPlan()
+    adapter.setImageRegion({ x: 0, y: 0, w: 600, h: 400 }) // the question photo
+    adapter.createShape({ type: "create_shape", id: "fig", shape: "rectangle", x: 700, y: 700, w: 300, h: 300 })
+    adapter.writeText({ type: "write_text", id: "n", position: { x: 0, y: 0 }, text: "Each particle has tension T up and its weight down." })
+    expect(shapes.get("shape:n")).toMatchObject({ x: 1048, y: 700 })
+  })
+  it("never runs the notes column across the question photo", () => {
+    const { adapter, shapes } = fixture()
+    adapter.beginPlan()
+    adapter.setImageRegion({ x: 0, y: 0, w: 600, h: 400 })
+    adapter.createShape({ type: "create_shape", id: "mark", shape: "rectangle", x: 50, y: 50, w: 100, h: 100 }) // drawn over the question
+    adapter.writeText({ type: "write_text", id: "n", position: { x: 0, y: 0 }, text: "The tension is the same throughout a light string." })
+    expect(shapes.get("shape:n")!.x).toBe(648) // past the question, not on top of it
+  })
+  it("keeps a short label placed on the drawing where it was put", () => {
+    const { adapter, shapes } = fixture()
+    adapter.beginPlan()
+    adapter.createShape({ type: "create_shape", id: "slab", shape: "rectangle", x: 0, y: 0, w: 300, h: 150 })
+    adapter.writeText({ type: "write_text", id: "theta", position: { x: 320, y: 100 }, text: "θ" })
+    expect(shapes.get("shape:theta")).toMatchObject({ x: 320, y: 100 })
   })
   it("edits an equation's LaTeX in place and re-measures it", () => {
     const { adapter, shapes } = fixture()

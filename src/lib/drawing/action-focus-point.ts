@@ -42,6 +42,10 @@ export function actionFocusPoint(action: DrawingAction): Point | null {
       return action.position ?? null
     case "draw_incline":
       return action.position
+    case "draw_pulley":
+      return action.centre ?? null
+    case "copy_figure":
+      return action.position
     case "draw_on_incline":
       return null
     case "draw_graph":
@@ -54,6 +58,8 @@ export function actionFocusPoint(action: DrawingAction): Point | null {
     case "update_graph":
     case "mark_image": // positioned relative to the image the model saw
     case "highlight_text":
+    case "draw_mass":
+    case "draw_string":
     case "move_object":
     case "update_object":
     case "update_plot":

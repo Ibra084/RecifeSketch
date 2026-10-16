@@ -77,3 +77,19 @@ describe("selection mode", () => {
     expect(prompt).not.toContain("PAST-PAPER")
   })
 })
+
+describe("figures in the question image", () => {
+  it("tells the model to copy figures exactly, never redraw them", () => {
+    const prompt = sourcePrompt({ image: { mimeType: "image/png", data: "x", width: 100, height: 100 }, region: { x: 0, y: 0, w: 600, h: 400 } })
+    expect(prompt).toMatch(/FIGURES IN THE IMAGE - NEVER REDRAW THEM/)
+    expect(prompt).toContain("copy_figure { id, box: [ymin, xmin, ymax, xmax], position")
+  })
+})
+
+describe("figure boxes", () => {
+  it("asks for a box around only the figure, not the question text", () => {
+    const prompt = sourcePrompt({ image: { mimeType: "image/png", data: "x", width: 100, height: 100 }, region: { x: 0, y: 0, w: 600, h: 400 } })
+    expect(prompt).toMatch(/tight box of ONLY the figure/)
+    expect(prompt).toMatch(/never the question's sentences/)
+  })
+})

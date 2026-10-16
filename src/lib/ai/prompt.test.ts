@@ -172,10 +172,10 @@ describe("keeping earlier graphs", () => {
 })
 
 describe("graph annotations", () => {
-  it("asks for notes right beside the graph, level with the feature they describe", () => {
+  it("marks features on the graph itself and sends its explanation to the notes column", () => {
     const prompt = buildTeachingPrompt("Sketch y = 1/f(x)", undefined, { desmos: true })
-    expect(prompt).toMatch(/ANNOTATE RIGHT BESIDE THE GRAPH/)
-    expect(prompt).toMatch(/level with the feature/)
+    expect(prompt).toMatch(/Mark a feature inside the graph itself with a labelled point/)
+    expect(prompt).toMatch(/notes column beside it/)
   })
 })
 
@@ -187,5 +187,21 @@ describe("lab apparatus", () => {
     }
     expect(prompt).toMatch(/ALWAYS\s+use this for apparatus/)
     expect(prompt).toMatch(/on: "<id>"/)
+  })
+})
+
+describe("connected mechanisms", () => {
+  it("requires pulleys, hanging masses and strings to be built from the mechanism actions", () => {
+    const prompt = buildTeachingPrompt("Two particles connected over a pulley")
+    expect(prompt).toMatch(/CONNECTED MECHANISMS .* MUST be\s+built from these/)
+    expect(prompt).toContain("draw_string { id, from, to, over?, color? }")
+  })
+})
+
+describe("notes layout", () => {
+  it("tells the model notes go in one column in reading order, with only short labels on the drawing", () => {
+    const prompt = buildTeachingPrompt("Explain this")
+    expect(prompt).toMatch(/NOTES ARE LAID OUT FOR YOU, IN ONE COLUMN/)
+    expect(prompt).toMatch(/short label of at\s+most 3 words/)
   })
 })

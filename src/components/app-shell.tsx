@@ -2,7 +2,7 @@
 
 import dynamic from "next/dynamic"
 import { useCallback, useEffect, useRef, useState } from "react"
-import type { Editor } from "tldraw"
+import { useValue, type Editor } from "tldraw"
 import { MessageSquare, PanelRightClose, PanelRightOpen } from "lucide-react"
 import { RecifeWordmark } from "@/components/brand/recife-wordmark"
 import { ChatPanelContent } from "@/components/chat/chat-panel-content"
@@ -18,37 +18,76 @@ import { readQuestionImageBlob } from "@/components/chat/question-image"
 import { actionFocusPoint } from "@/lib/drawing/action-focus-point"
 import type { DrawingSequence } from "@/lib/drawing/playback/types"
 
-interface CursorState {
-  x: number
-  y: number
+interface CommentPin {
+  id: string
+  /** Page-space, not screen-space, so it stays correctly placed as the camera pans/zooms. */
+  point: { x: number; y: number }
   label: string
 }
 
 /**
- * A visible pointer that moves to wherever the AI is currently drawing,
- * with that step's commentary shown right there on the board - so a
- * student can see where to look instead of only reading disconnected
- * chat text. The full commentary still goes to chat too, as the
- * reviewable log; this is a spatial complement to it, not a replacement.
+ * Every step the AI draws leaves behind a small pin at roughly where it
+ * was drawing, carrying that step's commentary - a persistent, spatial
+ * index into the lesson, not a toast that flashes and is gone. The most
+ * recent one opens automatically as it's drawn (the "watch it happen"
+ * moment); every pin, old or new, stays on the board and can be tapped
+ * open again at any time. The full commentary still goes to chat too, as
+ * the linear reviewable log - this is a spatial complement, not a
+ * replacement for it.
  */
-function AiCursorOverlay({ cursor }: { cursor: CursorState | null }) {
-  if (!cursor) return null
+function CommentPinsOverlay({
+  editor,
+  pins,
+  expandedId,
+  onToggle,
+}: {
+  editor: Editor | null
+  pins: CommentPin[]
+  expandedId: string | null
+  onToggle: (id: string) => void
+}) {
+  // Re-render whenever the camera moves, so every pin's screen position
+  // (recomputed below, fresh from its stable page point) stays correct.
+  useValue("camera", () => editor?.getCamera(), [editor])
+
+  if (!editor || pins.length === 0) return null
+
   return (
-    <div
-      className="pointer-events-none absolute z-30 -translate-x-1/2 -translate-y-1/2 transition-[left,top] duration-500 ease-[var(--ease-premium)]"
-      style={{ left: cursor.x, top: cursor.y }}
-    >
-      <div className="flex flex-col items-center">
-        <span className="h-3 w-3 shrink-0 rounded-full bg-accent ring-4 ring-accent-subtle" />
-        {cursor.label && (
+    <div className="pointer-events-none absolute inset-0 z-30 overflow-hidden">
+      {pins.map((pin) => {
+        const screen = editor.pageToScreen(pin.point)
+        const isOpen = pin.id === expandedId
+        return (
           <div
-            className="mt-2 max-w-[240px] rounded-xl border border-border-subtle bg-surface px-3 py-2 text-[12px] leading-relaxed text-ink"
-            style={{ boxShadow: "var(--shadow-popover)" }}
+            key={pin.id}
+            className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2"
+            style={{ left: screen.x, top: screen.y }}
           >
-            {cursor.label}
+            <div className="flex flex-col items-center">
+              <button
+                type="button"
+                onClick={() => onToggle(pin.id)}
+                aria-expanded={isOpen}
+                aria-label={isOpen ? "Hide this step's note" : "Show this step's note"}
+                className={cn(
+                  "tap-target pointer-events-auto flex items-center justify-center rounded-full transition-colors",
+                  isOpen ? "bg-accent" : "bg-accent/60 hover:bg-accent"
+                )}
+              >
+                <span className="h-3 w-3 rounded-full bg-white" />
+              </button>
+              {isOpen && (
+                <div
+                  className="pointer-events-auto mt-2 max-w-[240px] rounded-xl border border-border-subtle bg-surface px-3 py-2 text-[12px] leading-relaxed text-ink"
+                  style={{ boxShadow: "var(--shadow-popover)" }}
+                >
+                  {pin.label}
+                </div>
+              )}
+            </div>
           </div>
-        )}
-      </div>
+        )
+      })}
     </div>
   )
 }
@@ -77,11 +116,20 @@ export function AppShell() {
   // DrawingPlayer is created per `play()` call, same as the dev harness.
   const engineRef = useRef<DrawingEngine | null>(null)
   const editorRef = useRef<Editor | null>(null)
+  // Mirrors editorRef, but as state: CommentPinsOverlay needs the editor
+  // instance to render with, and refs can't be read during render.
+  const [mountedEditor, setMountedEditor] = useState<Editor | null>(null)
   const adapterRef = useRef<TldrawDrawingAdapter | null>(null)
   const animatorRef = useRef<TldrawShapeAnimator | null>(null)
   const playerRef = useRef<DrawingPlayer | null>(null)
 
-  const [cursor, setCursor] = useState<CursorState | null>(null)
+  const [pins, setPins] = useState<CommentPin[]>([])
+  const [expandedPinId, setExpandedPinId] = useState<string | null>(null)
+  const pinCounterRef = useRef(0)
+
+  const togglePin = useCallback((id: string) => {
+    setExpandedPinId((current) => (current === id ? null : id))
+  }, [])
 
   const resolveStepFocusPoint = useCallback((sequence: DrawingSequence, stepIndex: number) => {
     const step = sequence[stepIndex]
@@ -100,6 +148,7 @@ export function AppShell() {
 
   const handleEditorMount = useCallback((editor: Editor) => {
     editorRef.current = editor
+    setMountedEditor(editor)
     adapterRef.current?.dispose()
     const adapter = new TldrawDrawingAdapter(editor)
     adapterRef.current = adapter
@@ -133,10 +182,11 @@ export function AppShell() {
           onStepStart(snapshot.stepIndex)
 
           const point = resolveStepFocusPoint(sequence, snapshot.stepIndex)
-          const editor = editorRef.current
-          if (point && editor) {
-            const screen = editor.pageToScreen(point)
-            setCursor({ x: screen.x, y: screen.y, label: stepCommentary[snapshot.stepIndex] ?? "" })
+          const label = stepCommentary[snapshot.stepIndex]
+          if (point && label) {
+            const id = `pin-${++pinCounterRef.current}`
+            setPins((prev) => [...prev, { id, point, label }])
+            setExpandedPinId(id)
           }
         }
       })
@@ -147,7 +197,6 @@ export function AppShell() {
       } finally {
         unsubscribe()
         playerRef.current = null
-        setCursor(null)
       }
     },
     cancel: () => playerRef.current?.cancel(),
@@ -196,7 +245,7 @@ export function AppShell() {
       <div className="relative flex flex-1 overflow-hidden">
         <div className="relative flex-1">
           <WhiteboardSection onEditorMount={handleEditorMount} />
-          <AiCursorOverlay cursor={cursor} />
+          <CommentPinsOverlay editor={mountedEditor} pins={pins} expandedId={expandedPinId} onToggle={togglePin} />
         </div>
 
         <aside

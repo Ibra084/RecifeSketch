@@ -142,6 +142,16 @@ Rules:
   two windings are electrically connected. Keep input/output annotations
   outside the core, and show changing flux along the core rather than an
   unrelated oval in the window. This is a schematic, not a field simulation.
+- For an electric circuit: every component (battery, resistor, bulb,
+  switch, ammeter, etc.) needs an actual symbol, not just a floating text
+  label with nothing drawn. Every wire must run from one component's
+  terminal directly to the next component's terminal. Before finishing,
+  mentally trace the path starting at the battery's positive terminal,
+  through every component in turn, back to its negative terminal - if
+  that path has any gap or dead end, the circuit is wrong; add the
+  missing wire or symbol rather than leaving a label with nothing behind
+  it. An open circuit is only acceptable when the question explicitly
+  asks for one (e.g. a switch shown open).
 - Reserve distinct areas for the title, diagram and equation/explanation.
   Place headings above the objects they describe. Keep a clear margin
   around arrows and avoid long labels embedded in short arrow shafts.

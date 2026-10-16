@@ -40,6 +40,16 @@ describe("buildTeachingPrompt", () => {
     expect(prompt).toMatch(/image/)
   })
 
+  it("requires electric circuits to trace a closed conducting loop", () => {
+    // Found via live browser testing: a real response for a battery +
+    // resistor question drew a wire that dead-ended in empty space and a
+    // "Resistor" label with no symbol behind it at all - an open circuit
+    // with no indication it was meant to be open.
+    const prompt = buildTeachingPrompt("Explain a simple circuit").toLowerCase()
+    expect(prompt).toMatch(/trace the path/)
+    expect(prompt).toMatch(/gap or dead end/)
+  })
+
   it("forbids LaTeX-style equation markup", () => {
     const prompt = buildTeachingPrompt("Explain Newton's second law")
     expect(prompt).toMatch(/NEVER LaTeX/)

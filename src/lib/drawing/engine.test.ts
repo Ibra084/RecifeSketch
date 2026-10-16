@@ -322,3 +322,37 @@ describe("draw_force", () => {
     expect(result.error?.message).toMatch(/draw the object first/)
   })
 })
+
+describe("forces by named direction on a slope", () => {
+  it("braking on a car going downhill (slope 6°, downhill to the right) points up the slope: left and up", () => {
+    const adapter = new FakeDrawingAdapter()
+    const result = new DrawingEngine(adapter).run([
+      { type: "draw_incline", id: "road", position: { x: 0, y: 0 }, angle: 6, downhill: "right" },
+      { type: "draw_on_incline", id: "car", incline: "road", at: 0.5 },
+      { type: "draw_force", id: "brake", on: "car", direction: "up_slope", label: "$F_{\text{brake}}$" },
+      { type: "draw_force", id: "comp", on: "car", direction: "down_slope", label: "$mg\sin 6^\circ$" },
+      { type: "draw_force", id: "weight", on: "car", direction: "down", label: "$mg$" },
+    ])
+    expect(result.ok).toBe(true)
+    const arrow = (i: number) => {
+      const a = result.executed[i].action
+      if (a.type !== "draw_arrow") throw new Error("expected an arrow")
+      return { dx: a.end.x - a.start.x, dy: a.end.y - a.start.y } // page: +dy is down
+    }
+    expect(arrow(2).dx).toBeLessThan(0) // braking: left...
+    expect(arrow(2).dy).toBeLessThan(0) // ...and up
+    expect(arrow(3).dx).toBeGreaterThan(0) // weight component: right...
+    expect(arrow(3).dy).toBeGreaterThan(0) // ...and down
+    expect(arrow(4).dx).toBeCloseTo(0) // weight: straight down
+    expect(arrow(4).dy).toBeGreaterThan(0)
+  })
+
+  it("explains that slope directions need the object on a slope", () => {
+    const result = new DrawingEngine(new FakeDrawingAdapter()).run([
+      { type: "create_shape", id: "box", shape: "rectangle", x: 0, y: 0, w: 80, h: 40 },
+      { type: "draw_force", id: "f", on: "box", direction: "up_slope" },
+    ])
+    expect(result.ok).toBe(false)
+    expect(result.error?.message).toMatch(/draw_on_incline/)
+  })
+})

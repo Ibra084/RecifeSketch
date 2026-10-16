@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type PointerEvent } from "react"
-import { ChevronLeft, ChevronRight, MessageCircle, Paperclip, PenLine, Send, Sparkles, Square, X } from "lucide-react"
+import { ChevronLeft, ChevronRight, MessageCircle, MousePointerClick, Paperclip, PenLine, Send, Sparkles, Square, X } from "lucide-react"
 import type { QuestionSource } from "@/lib/ai/question-source"
 import { viewportPoint, viewportRect, type ViewportPoint, type ViewportRect, type ViewportSize } from "@/lib/overlay/coordinates"
 import { clampToViewport, placeSpeech } from "@/lib/overlay/placement"
@@ -28,6 +28,8 @@ interface AiCompanionProps {
   viewport: ViewportSize
   state: CompanionState
   busy: boolean
+  /** A lesson is paused on a step: a follow-up question may be asked now (it stops the remaining steps). */
+  acceptsFollowUp: boolean
   note: TutorNote | null
   onDismissNote: () => void
   onUserMove: (p: ViewportPoint) => void
@@ -40,6 +42,9 @@ interface AiCompanionProps {
   onSpeechNext: () => void
   /** Every explanation of the latest lesson so far, listed when the orb is opened. */
   lessonSteps: string[]
+  /** How many things are selected on the board - the question will be about them. */
+  selectionCount: number
+  onClearSelection: () => void
   hasQuestionSource: boolean
   onClearQuestionSource: () => void
 }
@@ -60,6 +65,7 @@ function OrbIcon({ state }: { state: CompanionState }) {
 
 export function AiCompanion(props: AiCompanionProps) {
   const { position, viewport, state, busy, note, onDismissNote, onUserMove, onAsk, onCancel } = props
+  const canAsk = !busy || props.acceptsFollowUp
   const [expanded, setExpanded] = useState(false)
   const [draft, setDraft] = useState("")
   const [attachment, setAttachment] = useState<{ image: NonNullable<QuestionSource["image"]>; name: string } | null>(null)
@@ -91,7 +97,7 @@ export function AiCompanion(props: AiCompanionProps) {
 
   function submit() {
     const question = draft.trim() || (attachment ? "Help me understand this question, starting with a hint." : "")
-    if (!question || busy) return
+    if (!question || !canAsk) return
     onAsk(question, attachment ? { image: attachment.image } : undefined)
     setDraft("")
     setAttachment(null)
@@ -269,6 +275,17 @@ export function AiCompanion(props: AiCompanionProps) {
               ))}
             </ol>
           )}
+          {props.selectionCount > 0 && (
+            <div className="mb-2 flex items-center justify-between gap-2 rounded-lg bg-accent-subtle px-2.5 py-1.5 text-[12px] text-accent-foreground">
+              <span className="flex items-center gap-1.5">
+                <MousePointerClick className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                Asking about your selection ({props.selectionCount} {props.selectionCount === 1 ? "item" : "items"})
+              </span>
+              <button type="button" onClick={props.onClearSelection} aria-label="Don't ask about the selection" className="shrink-0 opacity-70 hover:opacity-100">
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          )}
           <textarea
             ref={inputRef}
             value={draft}
@@ -283,8 +300,14 @@ export function AiCompanion(props: AiCompanionProps) {
               }
             }}
             rows={2}
-            disabled={busy}
-            placeholder={busy ? "Recife is working - wait or stop it first" : "Ask about the board, e.g. “Where did I go wrong?”"}
+            disabled={!canAsk}
+            placeholder={
+              props.selectionCount > 0 ? "Ask about what you selected, e.g. “Explain this step”"
+                : props.acceptsFollowUp ? "Ask a follow-up about this step…"
+                : busy ? "Recife is working - wait or stop it first"
+                : props.hasQuestionSource ? "Ask a follow-up, e.g. “Why did you use cos there?”"
+                : "Ask about the board, e.g. “Where did I go wrong?”"
+            }
             aria-label="Question for Recife"
             className="block w-full resize-none rounded-xl border border-border-subtle bg-surface-subtle px-3 py-2 text-base text-ink outline-none placeholder:text-ink-muted focus-visible:border-accent md:text-[13px]"
           />
@@ -339,7 +362,7 @@ export function AiCompanion(props: AiCompanionProps) {
             <button
               type="button"
               onClick={submit}
-              disabled={busy || (!draft.trim() && !attachment)}
+              disabled={!canAsk || (!draft.trim() && !attachment)}
               aria-label="Send question"
               className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground disabled:opacity-40 pointer-coarse:h-11 pointer-coarse:w-11"
             >

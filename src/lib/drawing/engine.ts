@@ -25,6 +25,7 @@ import type { DrawingAdapter, ObjectBounds } from "./adapter"
 import { drawingProgramSchema, type DrawArrowAction, type DrawForceAction, type DrawingAction } from "./protocol"
 import { curveToLine, repeatedCurveToLine } from "./curves"
 import { forceArrow, type ObjectFrame } from "./force-geometry"
+import { directionAngle } from "./incline"
 
 export interface ExecutedAction {
   index: number
@@ -59,6 +60,12 @@ const CREATING_TYPES = new Set<DrawingAction["type"]>([
   "draw_line",
   "draw_arrow",
   "draw_force",
+  "draw_graph",
+  "mark_image",
+  "highlight_text",
+  "draw_apparatus",
+  "draw_incline",
+  "draw_on_incline",
   "draw_curve",
   "draw_repeated_curve",
   "write_text",
@@ -111,6 +118,27 @@ export class DrawingEngine {
     switch (action.type) {
       case "update_plot":
         this.adapter.updatePlot(action)
+        return action
+      case "draw_graph":
+        this.adapter.drawGraph(action)
+        return action
+      case "mark_image":
+        this.adapter.markImage(action)
+        return action
+      case "highlight_text":
+        this.adapter.highlightText(action)
+        return action
+      case "draw_apparatus":
+        this.adapter.drawApparatus(action)
+        return action
+      case "draw_incline":
+        this.adapter.drawIncline(action)
+        return action
+      case "draw_on_incline":
+        this.adapter.drawOnIncline(action)
+        return action
+      case "update_graph":
+        this.adapter.updateGraph(action)
         return action
       case "draw_repeated_curve":
         this.adapter.drawLine(repeatedCurveToLine(action))
@@ -177,7 +205,9 @@ export class DrawingEngine {
   private resolveForce(action: DrawForceAction): DrawArrowAction {
     const frame = this.adapter.getObjectFrame?.(action.on) ?? frameFromBounds(this.adapter.getObjectBounds(action.on))
     if (!frame) throw new Error(`Unknown object "${action.on}" for force "${action.id}": draw the object first`)
-    const { start, end } = forceArrow(frame, action.angle, action.length)
+    // A named direction ("up_slope", "normal"...) is worked out from the slope the object rests on.
+    const angle = action.angle ?? directionAngle(action.direction!, this.adapter.getObjectSlope?.(action.on))
+    const { start, end } = forceArrow(frame, angle, action.length)
     return {
       type: "draw_arrow", id: action.id, start, end,
       ...(action.label !== undefined ? { label: action.label } : {}),

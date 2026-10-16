@@ -5,6 +5,7 @@ import { isTransientFailure, MAX_TRANSIENT_RETRIES, TRANSIENT_RETRY_DELAY_MS } f
 import { parseTeachingPlanResponse } from "./response-parser"
 import { estimateUsage, usageFromMeasuredTokens, type UsageEstimate } from "./usage-tracker"
 import { sourcePrompt, type QuestionSource } from "./question-source"
+import { visualPlanIssue } from "./teaching-protocol"
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -75,7 +76,8 @@ export class GeminiProvider implements AIProvider {
     if (!apiKey) return { ok: false, failure: { kind: "missing_api_key" } }
 
     const { question, context } = request
-    let prompt = buildTeachingPrompt(question, context) + "\n\n" + sourcePrompt(request.source)
+    const promptOptions = { desmos: config.desmos === true }
+    let prompt = buildTeachingPrompt(question, context, promptOptions) + "\n\n" + sourcePrompt(request.source)
     // One deadline for the whole request: repair and transient retries share it,
     // so a struggling provider can't keep a student waiting for minutes.
     const deadline = Date.now() + config.requestTimeoutMs
@@ -93,18 +95,22 @@ export class GeminiProvider implements AIProvider {
       if (!callResult.ok) return callResult
 
       const parsed = parseTeachingPlanResponse(callResult.text)
-      if (parsed.ok) {
+      // A valid plan must also be visual: send it back once if it only talks, or describes a
+      // graph without drawing it. On the last attempt a valid plan is used rather than failing.
+      const visualIssue = parsed.ok ? visualPlanIssue(parsed.plan, question) : null
+      if (parsed.ok && (!visualIssue || attempt === config.maxRetries)) {
         return { ok: true, plan: parsed.plan, usage: callResult.usage }
       }
 
-      if (attempt === config.maxRetries) {
+      if (!parsed.ok && attempt === config.maxRetries) {
         return { ok: false, failure: { kind: "invalid_output", detail: parsed.error.message } }
       }
       prompt = buildRepairPrompt({
         question,
         context,
+        options: promptOptions,
         invalidResponse: callResult.text,
-        errorMessage: parsed.error.message,
+        errorMessage: visualIssue ?? (parsed.ok ? "" : parsed.error.message),
       }) + "\n\n" + sourcePrompt(request.source)
     }
 

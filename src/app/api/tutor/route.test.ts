@@ -95,7 +95,7 @@ describe("handleTutorRequest", () => {
     })
     const context = {
       objects: [{ id: "primary-coil", kind: "shape", label: "Primary coil", x: 0, y: 0, w: 10, h: 10 }],
-      history: [{ question: "Explain transformers", concept: "Transformers", lastCommentary: "Drew coils." }],
+      history: [{ question: "Explain transformers", concept: "Transformers", explanation: "Drew coils." }],
     }
 
     await handleTutorRequest(makeRequest({ question: "Why does it need AC?", context }), openDeps(provider))

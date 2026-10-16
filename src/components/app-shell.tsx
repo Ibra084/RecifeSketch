@@ -2,7 +2,7 @@
 
 import dynamic from "next/dynamic"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Box, useValue, type Editor, type TLShapeId } from "tldraw"
+import { Box, renderPlaintextFromRichText, useValue, type Editor, type TLShapeId } from "tldraw"
 import { RecifeWordmark } from "@/components/brand/recife-wordmark"
 import { AiCompanion, type CompanionState, type TutorSpeech } from "@/components/companion/ai-companion"
 import { readQuestionImageBlob } from "@/components/companion/question-image"
@@ -14,6 +14,8 @@ import { DrawingEngine } from "@/lib/drawing/engine"
 import { DrawingPlayer } from "@/lib/drawing/playback/player"
 import { TldrawShapeAnimator } from "@/lib/drawing/playback/tldraw-animator"
 import type { DrawingSequence } from "@/lib/drawing/playback/types"
+import type { DrawingAction } from "@/lib/drawing/protocol"
+import { cameraMoveFor } from "@/lib/overlay/camera-follow"
 import { findUnattachedQuestionImage, markQuestionSourceAttached, placeQuestionSheet } from "@/lib/drawing/question-sheet"
 import { TldrawDrawingAdapter } from "@/lib/drawing/tldraw-adapter"
 import { pageRect, projectRect, type PageRect, type ViewportRect } from "@/lib/overlay/coordinates"
@@ -58,6 +60,11 @@ interface Lesson {
   leaving: boolean
 }
 
+type FollowHandler = (drawn: DrawingAction, signal: AbortSignal) => Promise<void>
+
+/** How long the camera takes to bring the next drawing into view. */
+const FOLLOW_CAMERA_MS = 350
+
 type StepHandler = (sequence: DrawingSequence, stepIndex: number, text: string | undefined) => void
 
 export function AppShell() {
@@ -71,12 +78,15 @@ export function AppShell() {
   const playerRef = useRef<DrawingPlayer | null>(null)
   const stepHandlerRef = useRef<StepHandler | null>(null)
   const endTurnRef = useRef<(() => void) | null>(null)
+  const followDrawnRef = useRef<FollowHandler | null>(null)
   // Mirrors editorRef as state: overlays need the editor to render, and refs can't be read during render.
   const [mountedEditor, setMountedEditor] = useState<Editor | null>(null)
 
   const viewportW = useValue("viewport w", () => mountedEditor?.getViewportScreenBounds().w ?? 0, [mountedEditor])
   const viewportH = useValue("viewport h", () => mountedEditor?.getViewportScreenBounds().h ?? 0, [mountedEditor])
   const viewport = useMemo(() => (viewportW > 0 ? { w: viewportW, h: viewportH } : null), [viewportW, viewportH])
+  // Whatever the student has selected on the board is what their next question is about.
+  const selectionCount = useValue("selection count", () => mountedEditor?.getSelectedShapeIds().length ?? 0, [mountedEditor])
 
   const orb = useCompanionOrb(viewport)
   const [speaking, setSpeaking] = useState(false)
@@ -180,10 +190,9 @@ export function AppShell() {
     stepHandlerRef.current = (sequence, stepIndex, text) => {
       const editor = editorRef.current
       if (!editor) return
+      // The orb itself follows each object as it's drawn (followDrawn); this only seeds where the speech should avoid.
       const area = resolveStepArea(sequence, stepIndex)
       const areaRect = area ? projectRect(editor, area) : null
-      // The orb moves beside what it's explaining; its speech opens on the far side, off the drawing.
-      if (areaRect) orb.glideNear(areaRect, [])
       setLesson((current) => current && {
         ...current,
         steps: [...current.steps.slice(0, stepIndex), { text: text ?? "", avoid: areaRect }],
@@ -193,6 +202,31 @@ export function AppShell() {
       setSpeaking(true)
       window.clearTimeout(speakingTimerRef.current)
       speakingTimerRef.current = window.setTimeout(() => setSpeaking(false), SPEAKING_PULSE_MS)
+    }
+    followDrawnRef.current = async (drawn, signal) => {
+      const editor = editorRef.current
+      const adapter = adapterRef.current
+      if (!editor || !adapter || !("id" in drawn) || drawn.type === "delete_object") return
+      const bounds = adapter.getObjectBounds(drawn.id)
+      if (!bounds) return
+      // Bring it into view with as little camera movement as possible (none if it's already visible).
+      const move = cameraMoveFor(editor.getViewportPageBounds(), bounds, 60 / editor.getZoomLevel())
+      const duration = prefersReducedMotion() ? 0 : FOLLOW_CAMERA_MS
+      if (move.kind === "pan") editor.centerOnPoint(move.center, { animation: { duration } })
+      if (move.kind === "fit") editor.zoomToBounds(move.bounds, { targetZoom: 1, animation: { duration } })
+      if (move.kind !== "none" && duration > 0) {
+        await new Promise<void>((resolve) => {
+          const timer = window.setTimeout(resolve, duration + 30)
+          signal.addEventListener("abort", () => { window.clearTimeout(timer); resolve() }, { once: true })
+        })
+      }
+      // Then the tutor moves right beside it, and its speech keeps off it.
+      const onScreen = projectRect(editor, pageRect(bounds.x, bounds.y, bounds.w, bounds.h))
+      orb.glideNear(onScreen, [])
+      setLesson((current) => current && current.steps.length > 0 ? {
+        ...current,
+        steps: current.steps.map((step, i) => (i === current.steps.length - 1 ? { ...step, avoid: onScreen } : step)),
+      } : current)
     }
     endTurnRef.current = () => {
       window.clearTimeout(homeTimerRef.current)
@@ -205,10 +239,12 @@ export function AppShell() {
 
   const [boardController] = useState<WhiteboardController>(() => ({
     isReady: () => engineRef.current !== null && animatorRef.current !== null,
-    play: async (sequence, stepCommentary) => {
+    play: async (sequence, stepCommentary, imageRegion) => {
       const engine = engineRef.current
       const animator = animatorRef.current
       if (!engine || !animator) throw new Error("Whiteboard not ready")
+      adapterRef.current?.setImageRegion(imageRegion ?? null)
+      adapterRef.current?.beginPlan()
       window.clearTimeout(homeTimerRef.current)
       window.clearTimeout(closeTimerRef.current)
       setLesson({
@@ -229,6 +265,8 @@ export function AppShell() {
           signal.addEventListener("abort", () => release(), { once: true })
           setLesson((current) => current && { ...current, waiting: true })
         }),
+        // As each object appears, bring it into view and move the tutor beside it.
+        beforeReveal: (drawn, signal) => followDrawnRef.current?.(drawn, signal),
       })
       playerRef.current = player
       // Each step is explained as it starts, so the tutor narrates while it draws.
@@ -260,10 +298,14 @@ export function AppShell() {
         return b ? [{ x: b.x, y: b.y, w: Math.max(1, b.w), h: Math.max(1, b.h) }] : []
       })
       const right = occupied.reduce((max, b) => Math.max(max, b.x + b.w), view.x)
+      // With something selected, the answer belongs right beside it - not in the next empty space along.
+      const selected = editor.getSelectedShapeIds().length > 0 ? editor.getSelectionPageBounds() : null
       return {
         viewport: { x: view.x, y: view.y, w: view.w, h: view.h },
         occupied: occupied.slice(-120),
-        freshArea: { x: occupied.length ? right + 160 : view.x + 80, y: view.y + 80, w: 1000, h: 700 },
+        freshArea: selected
+          ? { x: selected.x + selected.w + 40, y: selected.y, w: 900, h: Math.max(500, selected.h) }
+          : { x: occupied.length ? right + 160 : view.x + 80, y: view.y + 80, w: 1000, h: 700 },
       }
     },
     placeQuestion: (source) => {
@@ -281,10 +323,57 @@ export function AppShell() {
     exportQuestionImage: async (id) => {
       const editor = editorRef.current
       if (!editor) throw new Error("Whiteboard not ready")
-      const { blob } = await editor.toImage([id], { format: "jpeg", quality: 0.85, background: true })
+      // No padding: the image must cover exactly the shape's bounds, or the AI's marks on it land shifted.
+      const { blob } = await editor.toImage([id], { format: "jpeg", quality: 0.85, background: true, padding: 0 })
       const image = await readQuestionImageBlob(blob)
       markQuestionSourceAttached(editor, id)
       return image
+    },
+    getSelection: () => {
+      const editor = editorRef.current
+      if (!editor || editor.getSelectedShapeIds().length === 0) return undefined
+      const labels = new Map((adapterRef.current?.summarizeObjects() ?? []).map((s) => [s.id, s.label]))
+      const seen = new Set<string>()
+      const objects = editor.getSelectedShapes().flatMap((selected) => {
+        // A label stands for the shape it names.
+        const owner = typeof selected.meta.recifeLabelOwner === "string" ? editor.getShape(selected.meta.recifeLabelOwner as TLShapeId) : undefined
+        const shape = owner ?? selected
+        const bounds = editor.getShapePageBounds(shape)
+        if (seen.has(shape.id) || !bounds) return []
+        seen.add(shape.id)
+        const id = typeof shape.meta.recifeObjectId === "string" ? shape.meta.recifeObjectId : undefined
+        const kind = typeof shape.meta.recifeKind === "string" ? shape.meta.recifeKind
+          : shape.meta.recifeQuestionSource ? "question image"
+          : shape.type === "image" ? "image"
+          : shape.type === "text" ? "student text"
+          : shape.type === "draw" ? "handwriting"
+          : `student ${shape.type}`.slice(0, 40)
+        const text = id ? labels.get(id) : shape.type === "text" ? renderPlaintextFromRichText(editor, shape.props.richText) : undefined
+        return [{
+          ...(id ? { id } : {}),
+          kind,
+          ...(text ? { label: text.slice(0, 200) } : {}),
+          bounds: { x: bounds.x, y: bounds.y, w: Math.max(1, bounds.w), h: Math.max(1, bounds.h) },
+        }]
+      }).slice(0, 30)
+      const region = editor.getSelectionPageBounds()
+      if (!region || objects.length === 0) return undefined
+      return { region: { x: region.x, y: region.y, w: Math.max(1, region.w), h: Math.max(1, region.h) }, objects }
+    },
+    captureSelection: async () => {
+      const editor = editorRef.current
+      const ids = editor?.getSelectedShapeIds() ?? []
+      const bounds = editor?.getSelectionPageBounds()
+      if (!editor || ids.length === 0 || !bounds) return undefined
+      // Exactly the selected area, no padding, so marks the tutor places on this image land precisely.
+      const { blob } = await editor.toImage([...ids], {
+        format: "jpeg", quality: 0.85, background: true, bounds: new Box(bounds.x, bounds.y, bounds.w, bounds.h), padding: 0,
+      })
+      return {
+        kind: "selection",
+        image: await readQuestionImageBlob(blob),
+        region: { x: bounds.x, y: bounds.y, w: Math.max(1, bounds.w), h: Math.max(1, bounds.h) },
+      }
     },
     captureStudentWork: async (alsoInclude) => {
       const editor = editorRef.current
@@ -356,6 +445,7 @@ export function AppShell() {
             viewport={viewport}
             state={companionState}
             busy={tutor.phase !== "idle"}
+            acceptsFollowUp={tutor.phase === "drawing" && !!lesson?.waiting}
             note={tutor.note}
             onDismissNote={tutor.dismissNote}
             onUserMove={orb.placeByUser}
@@ -366,6 +456,8 @@ export function AppShell() {
             onSpeechBack={lessonBack}
             onSpeechNext={lessonNext}
             lessonSteps={lesson?.steps.map((step) => step.text) ?? []}
+            selectionCount={selectionCount}
+            onClearSelection={() => mountedEditor?.selectNone()}
             hasQuestionSource={tutor.hasQuestionSource}
             onClearQuestionSource={tutor.clearQuestionSource}
           />

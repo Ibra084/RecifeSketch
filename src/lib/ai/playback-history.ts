@@ -1,16 +1,27 @@
 import type { TeachingPlan } from "./teaching-protocol"
 import type { PlaybackSnapshot } from "../drawing/playback/types"
 
-/** Only completed steps may be described as taught in a follow-up request. */
-export function playbackCommentary(plan: TeachingPlan, outcome: PlaybackSnapshot): string {
-  if (outcome.state === "completed") return plan.steps.at(-1)!.commentary
-  let count = 0
-  let last = "No complete teaching step was drawn."
-  for (const step of plan.steps) {
-    count += step.actions.length
-    if (count > outcome.actionIndex) break
-    last = step.commentary
+/** Mirrors MAX_HISTORY_EXPLANATION_LENGTH in context.ts. */
+const MAX_EXPLANATION_LENGTH = 1600
+
+/**
+ * What the student was actually shown, for the tutor to remember in
+ * follow-ups: every completed step's explanation, numbered. Steps that
+ * never got drawn (playback stopped or failed first) are left out, so a
+ * follow-up never assumes the student saw them.
+ */
+export function playbackExplanation(plan: TeachingPlan, outcome: PlaybackSnapshot): string {
+  let drawn = 0
+  const shown: string[] = []
+  for (const [index, step] of plan.steps.entries()) {
+    drawn += step.actions.length
+    if (outcome.state !== "completed" && drawn > outcome.actionIndex) break
+    shown.push(`${index + 1}. ${step.commentary}`)
   }
-  const status = outcome.state === "cancelled" ? "Drawing cancelled; board may be partial. " : "Drawing failed; board may be partial. "
-  return (status + "Last completed step: " + last).slice(0, 400)
+  const total = plan.steps.length
+  const status =
+    outcome.state === "completed" ? ""
+      : shown.length === 0 ? "No complete teaching step was drawn. "
+      : `${outcome.state === "cancelled" ? "Stopped" : "Drawing failed"} after step ${shown.length} of ${total}; later steps were not shown. `
+  return (status + shown.join(" ")).trim().slice(0, MAX_EXPLANATION_LENGTH)
 }

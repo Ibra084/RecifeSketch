@@ -1,4 +1,6 @@
 import { z } from "zod"
+import { APPARATUS_KINDS } from "./apparatus"
+import { FORCE_DIRECTIONS } from "./incline"
 
 /**
  * The validated drawing-action protocol.
@@ -204,13 +206,139 @@ export const drawForceActionSchema = z.strictObject({
   type: z.literal("draw_force"),
   id: objectIdSchema,
   on: objectIdSchema,
-  angle: z.number().finite().min(-360).max(720),
+  angle: z.number().finite().min(-360).max(720).optional(),
+  /** A named direction instead of an angle; the slope-relative ones use the slope the object rests on. */
+  direction: z.enum(FORCE_DIRECTIONS).optional(),
   length: z.number().finite().min(20).max(600).optional(),
   label: textSchema.optional(),
   color: colorSchema.optional(),
   dash: dashStyleSchema.optional(),
   size: sizeStyleSchema.optional(),
+}).refine((a) => (a.angle === undefined) !== (a.direction === undefined), "draw_force needs exactly one of angle or direction")
+
+/** A slope described as a question describes it: its angle and which way is downhill. */
+export const drawInclineActionSchema = z.strictObject({
+  type: z.literal("draw_incline"),
+  id: objectIdSchema,
+  /** Top-left of the slope's bounding box. */
+  position: pointSchema,
+  base: z.number().finite().min(120).max(1400).optional(),
+  angle: z.number().finite().min(1).max(80),
+  downhill: z.enum(["left", "right"]),
+  /** Shown at the angle; defaults to the angle in degrees. */
+  angleLabel: textSchema.optional(),
+  color: colorSchema.optional(),
+  label: textSchema.optional(),
 })
+
+/** A block (or any object) resting on a slope, tilted to match it. */
+export const drawOnInclineActionSchema = z.strictObject({
+  type: z.literal("draw_on_incline"),
+  id: objectIdSchema,
+  incline: objectIdSchema,
+  /** How far up the slope, 0 (bottom) to 1 (top). */
+  at: z.number().min(0).max(1).optional(),
+  w: z.number().finite().min(10).max(400).optional(),
+  h: z.number().finite().min(10).max(400).optional(),
+  shape: z.enum(["rectangle", "ellipse"]).optional(),
+  color: colorSchema.optional(),
+  fill: fillStyleSchema.optional(),
+  label: textSchema.optional(),
+})
+
+/**
+ * Marks something inside the question/student-work image the model was
+ * shown: a box, circle or underline around it. `box` is [ymin, xmin, ymax,
+ * xmax] on a 0-1000 scale of that image (Gemini's native box format), and
+ * the renderer maps it onto where the image actually sits on the board - so
+ * the model never converts coordinates itself.
+ */
+export const markImageActionSchema = z.strictObject({
+  type: z.literal("mark_image"),
+  id: objectIdSchema,
+  box: z.tuple([
+    z.number().min(0).max(1000), z.number().min(0).max(1000),
+    z.number().min(0).max(1000), z.number().min(0).max(1000),
+  ]).refine(([ymin, xmin, ymax, xmax]) => ymax > ymin && xmax > xmin, "box must be [ymin, xmin, ymax, xmax] with max > min"),
+  style: z.enum(["box", "circle", "underline"]).optional(),
+  color: colorSchema.optional(),
+  label: textSchema.optional(),
+})
+
+/**
+ * Highlights printed words in the question image, exactly: the words are
+ * found by OCR in the image and the highlight drawn on their real pixel
+ * boxes (one per line if the phrase wraps). `box` is an optional fallback
+ * (same format as mark_image) used only if the words can't be found.
+ */
+export const highlightTextActionSchema = z.strictObject({
+  type: z.literal("highlight_text"),
+  id: objectIdSchema,
+  text: z.string().min(1).max(200),
+  occurrence: z.number().int().min(1).max(20).optional(),
+  style: z.enum(["highlight", "box", "underline", "circle"]).optional(),
+  color: colorSchema.optional(),
+  box: z.tuple([z.number().min(0).max(1000), z.number().min(0).max(1000), z.number().min(0).max(1000), z.number().min(0).max(1000)]).optional(),
+  label: textSchema.optional(),
+})
+
+/**
+ * A standard piece of lab apparatus, drawn with correct proportions from a
+ * kit (see apparatus.ts) as editable board shapes. Placed by `position`
+ * (top-left), or `on` top of / `inside` another object by id - e.g. a
+ * beaker on the tripod's gauze, a thermometer in the beaker.
+ */
+export const drawApparatusActionSchema = z.strictObject({
+  type: z.literal("draw_apparatus"),
+  id: objectIdSchema,
+  kind: z.enum(APPARATUS_KINDS),
+  position: pointSchema.optional(),
+  on: objectIdSchema.optional(),
+  inside: objectIdSchema.optional(),
+  height: z.number().finite().min(30).max(800).optional(),
+  /** How full, 0-1 (vessels). */
+  fill: z.number().min(0).max(1).optional(),
+  liquid: colorSchema.optional(),
+  color: colorSchema.optional(),
+  /** Bunsen burner: draw the flame. */
+  lit: z.boolean().optional(),
+  label: textSchema.optional(),
+}).refine((a) => [a.position, a.on, a.inside].filter((v) => v !== undefined).length === 1,
+  "draw_apparatus needs exactly one of position, on or inside")
+
+/** One line of a Desmos graph: a LaTeX equation, inequality or point, e.g. "y=x^2-4" or "(2,0)". Maths only - never code. */
+export const graphExpressionSchema = z.strictObject({
+  latex: z.string().min(1).max(300),
+  color: colorSchema.optional(),
+  /** Shown beside a point, e.g. "Vertex". */
+  label: z.string().max(60).optional(),
+})
+
+export const graphBoundsSchema = z.strictObject({
+  left: z.number().finite(),
+  right: z.number().finite(),
+  bottom: z.number().finite(),
+  top: z.number().finite(),
+}).refine((b) => b.right > b.left && b.top > b.bottom, "graph bounds need right > left and top > bottom")
+
+/** A live Desmos graph placed on the board, plotted exactly from its equations. */
+export const drawGraphActionSchema = z.strictObject({
+  type: z.literal("draw_graph"),
+  id: objectIdSchema,
+  position: pointSchema,
+  w: z.number().finite().min(200).max(1400).optional(),
+  h: z.number().finite().min(160).max(1000).optional(),
+  expressions: z.array(graphExpressionSchema).min(1).max(12),
+  bounds: graphBoundsSchema.optional(),
+})
+
+/** Replaces an existing Desmos graph's equations and/or view. */
+export const updateGraphActionSchema = z.strictObject({
+  type: z.literal("update_graph"),
+  id: objectIdSchema,
+  expressions: z.array(graphExpressionSchema).min(1).max(12).optional(),
+  bounds: graphBoundsSchema.optional(),
+}).refine((a) => a.expressions !== undefined || a.bounds !== undefined, "update_graph must change expressions or bounds")
 
 export const drawCurveActionSchema = z.strictObject({
   type: z.literal("draw_curve"),
@@ -345,6 +473,13 @@ export const drawingActionSchema = z.discriminatedUnion("type", [
   drawLineActionSchema,
   drawArrowActionSchema,
   drawForceActionSchema,
+  drawGraphActionSchema,
+  updateGraphActionSchema,
+  markImageActionSchema,
+  highlightTextActionSchema,
+  drawApparatusActionSchema,
+  drawInclineActionSchema,
+  drawOnInclineActionSchema,
   drawCurveActionSchema,
   drawRepeatedCurveActionSchema,
   writeTextActionSchema,
@@ -368,6 +503,15 @@ export type CreatePolygonAction = z.infer<typeof createPolygonActionSchema>
 export type DrawLineAction = z.infer<typeof drawLineActionSchema>
 export type DrawArrowAction = z.infer<typeof drawArrowActionSchema>
 export type DrawForceAction = z.infer<typeof drawForceActionSchema>
+export type DrawGraphAction = z.infer<typeof drawGraphActionSchema>
+export type MarkImageAction = z.infer<typeof markImageActionSchema>
+export type HighlightTextAction = z.infer<typeof highlightTextActionSchema>
+export type DrawApparatusAction = z.infer<typeof drawApparatusActionSchema>
+export type DrawInclineAction = z.infer<typeof drawInclineActionSchema>
+export type DrawOnInclineAction = z.infer<typeof drawOnInclineActionSchema>
+export type UpdateGraphAction = z.infer<typeof updateGraphActionSchema>
+export type GraphExpression = z.infer<typeof graphExpressionSchema>
+export type GraphBounds = z.infer<typeof graphBoundsSchema>
 export type DrawCurveAction = z.infer<typeof drawCurveActionSchema>
 export type DrawRepeatedCurveAction = z.infer<typeof drawRepeatedCurveActionSchema>
 export type WriteTextAction = z.infer<typeof writeTextActionSchema>
@@ -396,6 +540,12 @@ export const CREATING_ACTION_TYPES = [
   "draw_line",
   "draw_arrow",
   "draw_force",
+  "draw_graph",
+  "mark_image",
+  "highlight_text",
+  "draw_apparatus",
+  "draw_incline",
+  "draw_on_incline",
   "draw_curve",
   "draw_repeated_curve",
   "write_text",
@@ -406,6 +556,7 @@ export const CREATING_ACTION_TYPES = [
 /** The actions that reference a previously-created object by `id`. */
 export const REFERENCING_ACTION_TYPES = [
   "update_plot",
+  "update_graph",
   "move_object",
   "update_object",
   "delete_object",

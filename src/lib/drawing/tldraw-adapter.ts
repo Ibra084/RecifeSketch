@@ -21,6 +21,12 @@ import type { DrawingAdapter, HighlightOptions, ObjectBounds } from "./adapter"
 import { findContainingId } from "./geometry"
 import { formatEquation } from "./math-notation"
 import { MATH_SHAPE_TYPE, measureMath, type MathShape } from "./math-shape"
+import { GRAPH_PALETTE, GRAPH_SHAPE_TYPE, type GraphLine, type GraphShape } from "./graph-shape"
+import { toDesmosLatex } from "./desmos-latex"
+import { boxOutline, circleOutline, imageBoxToPage, underlineFor } from "./image-marks"
+import { APPARATUS_SHAPE, buildApparatus, placeApparatus } from "./apparatus"
+import { blockOnIncline, inclineGeometry } from "./incline"
+import { findPhrase, pixelRectToPage, type OcrResult } from "./text-match"
 import { computeNiceTicks, mapPointsToCanvas, sampleFunction } from "./plotting"
 import { buildDrawSegments, buildLinePointsRecord } from "./tldraw-shape-builders"
 import { AttachedLabels } from "./attached-labels"
@@ -32,21 +38,29 @@ import type {
   CreatePolygonAction,
   CreateShapeAction,
   DrawArrowAction,
+  DrawGraphAction,
+  MarkImageAction,
+  HighlightTextAction,
+  DrawApparatusAction,
+  DrawInclineAction,
+  DrawOnInclineAction,
+  GraphExpression,
   DrawingColor,
   DrawLineAction,
   FocusCameraAction,
   PlotFunctionAction,
   UpdateObjectPatch,
+  UpdateGraphAction,
   UpdatePlotAction,
   WriteEquationAction,
   WriteTextAction,
 } from "./protocol"
 import { plotFunctionActionSchema } from "./protocol"
 
-type TrackedKind = "geo" | "draw" | "line" | "arrow" | "text" | typeof MATH_SHAPE_TYPE
+type TrackedKind = "geo" | "draw" | "line" | "arrow" | "text" | "group" | typeof MATH_SHAPE_TYPE | typeof GRAPH_SHAPE_TYPE
 
 /** The vocabulary used in a board summary - finer-grained than `TrackedKind` (which collapses freehand/polygon into tldraw's "draw"). */
-export type SummaryKind = "shape" | "freehand" | "polygon" | "line" | "arrow" | "text" | "equation" | "plot"
+export type SummaryKind = "shape" | "freehand" | "polygon" | "line" | "arrow" | "text" | "equation" | "plot" | "graph" | "apparatus" | "incline"
 
 interface TrackedObject {
   tlId: TLShapeId
@@ -67,6 +81,11 @@ export interface TrackedObjectSummary {
   /** Ids of other known objects this one (usually an arrow) visually touches. */
   connects?: string[]
 }
+
+/** Narrowest a paragraph is ever wrapped (page units) - narrower reads as a one-word-per-line column. */
+const MIN_PROSE_WIDTH = 320
+/** Space kept between writing and the edge of a box it is written in. */
+const BOX_PADDING = 14
 
 /** Mirrors `MAX_CONTEXT_OBJECTS` in src/lib/ai/context.ts - keep in sync. */
 const MAX_TRACKED_OBJECT_SUMMARIES = 60
@@ -91,6 +110,19 @@ export function turnedAboutCentre(centre: { x: number; y: number }, w: number, h
     y: centre.y - (w / 2) * sin - (h / 2) * cos,
     rotation,
   }
+}
+
+/**
+ * The tutor's graph lines as Desmos-ready LaTeX ("sin(x)", "|x|", "sqrt(x)" would otherwise fail in
+ * Desmos), with any missing colour taken from a palette so overlaid curves differ.
+ */
+function graphLines(expressions: GraphExpression[]): GraphLine[] {
+  return expressions.map((e, i) => ({ latex: toDesmosLatex(e.latex), color: e.color ?? GRAPH_PALETTE[i % GRAPH_PALETTE.length], label: e.label ?? "" }))
+}
+
+/** How a graph is described to the tutor in follow-ups: its equations. */
+function graphSummary(lines: GraphLine[]): string {
+  return `graph: ${lines.map((line) => line.latex).join("; ")}`
 }
 
 function regionsIntersect(
@@ -136,12 +168,12 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
   dispose(): void { this.labels.dispose(); this.stopTracking(); this.stopAuthorTagging() }
 
   private restoreTracked(): void {
-    const kinds: SummaryKind[] = ["shape", "freehand", "polygon", "line", "arrow", "text", "equation", "plot"]
+    const kinds: SummaryKind[] = ["shape", "freehand", "polygon", "line", "arrow", "text", "equation", "plot", "graph", "apparatus", "incline"]
     for (const shape of this.editor.getCurrentPageShapes()) {
       const id = shape.meta.recifeObjectId
       const kind = shape.meta.recifeKind as SummaryKind
       if (typeof id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(id) && kinds.includes(kind) &&
-        ["geo", "draw", "line", "arrow", "text", MATH_SHAPE_TYPE].includes(shape.type)) {
+        ["geo", "draw", "line", "arrow", "text", MATH_SHAPE_TYPE, GRAPH_SHAPE_TYPE, "group"].includes(shape.type)) {
         this.objects.set(id, { tlId: shape.id, kind: shape.type as TrackedKind, summaryKind: kind })
       }
     }
@@ -154,6 +186,12 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
   }
 
   createShape(action: CreateShapeAction): void {
+    const at = this.followPlanShift({ x: action.x, y: action.y })
+    this.createGeo({ ...action, x: at.x, y: at.y })
+  }
+
+  /** A geo shape exactly where asked (image marks use this directly - they are placed on the image, not by the plan). */
+  private createGeo(action: CreateShapeAction): void {
     const tlId = this.track(action.id, "geo", "shape", action.label)
     const placement = turnedAboutCentre(
       { x: action.x + action.w / 2, y: action.y + action.h / 2 }, action.w, action.h, action.rotation ?? 0)
@@ -267,12 +305,48 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
   writeText(action: WriteTextAction): void {
     // All tutor writing is typeset (any $...$ maths included) on a solid backing, so it reads clearly over other content.
     const tlId = this.track(action.id, MATH_SHAPE_TYPE, "text", action.text)
-    this.createMath(tlId, action.position, action.text, "mixed", action.color ?? "black", action.size ?? "m", action.w ?? 0)
+    const position = this.followPlanShift(action.position)
+    // Writing that starts inside a box (e.g. a "Model answer" frame) fills that box's width; any
+    // other paragraph is never squeezed into a narrow column, whatever width was asked for.
+    const box = this.boxAround(position)
+    const maxW = box
+      ? Math.max(MIN_PROSE_WIDTH / 2, box.x + box.w - position.x - BOX_PADDING)
+      : action.w !== undefined && action.text.length > 40 ? Math.max(action.w, MIN_PROSE_WIDTH) : action.w ?? 0
+    this.createMath(tlId, position, action.text, "mixed", action.color ?? "black", action.size ?? "m", maxW)
+    if (box) this.growBoxToFit(box.id, tlId)
+  }
+
+  /** The smallest unturned rectangle that the point is inside - the box some writing is meant to go in. */
+  private boxAround(point: { x: number; y: number }): { id: TLShapeId; x: number; y: number; w: number; h: number } | undefined {
+    let best: { id: TLShapeId; x: number; y: number; w: number; h: number } | undefined
+    for (const shape of this.editor.getCurrentPageShapes()) {
+      if (shape.type !== "geo" || shape.props.geo !== "rectangle" || shape.rotation !== 0 || shape.id.endsWith(":highlight")) continue
+      const b = this.editor.getShapePageBounds(shape)
+      if (!b || b.w < 60) continue
+      const inside = point.x >= b.x - 4 && point.x <= b.x + b.w - 40 && point.y >= b.y - 4 && point.y <= b.y + b.h - 4
+      if (inside && (!best || b.w * b.h < best.w * best.h)) best = { id: shape.id, x: b.x, y: b.y, w: b.w, h: b.h }
+    }
+    return best
+  }
+
+  /** Stretches a box down (and right, for one long word) until the writing in it fits inside, with padding. */
+  private growBoxToFit(boxId: TLShapeId, textId: TLShapeId): void {
+    const box = this.editor.getShape(boxId)
+    const boxBounds = this.editor.getShapePageBounds(boxId)
+    const text = this.editor.getShapePageBounds(textId)
+    if (box?.type !== "geo" || !boxBounds || !text) return
+    // Only if the writing still starts inside the box (it may have been moved off other writing).
+    if (text.x < boxBounds.x - 4 || text.x > boxBounds.x + boxBounds.w || text.y < boxBounds.y - 4 || text.y > boxBounds.y + boxBounds.h) return
+    const needH = text.y + text.h + BOX_PADDING - boxBounds.y
+    const needW = text.x + text.w + BOX_PADDING - boxBounds.x
+    if (needH > box.props.h || needW > box.props.w) {
+      this.editor.updateShape({ id: boxId, type: "geo", props: { h: Math.max(box.props.h, needH), w: Math.max(box.props.w, needW) } })
+    }
   }
 
   writeEquation(action: WriteEquationAction): void {
     const tlId = this.track(action.id, MATH_SHAPE_TYPE, "equation", action.expression)
-    this.createMath(tlId, action.position, action.expression, "latex", action.color ?? "black", action.size ?? "m", 0)
+    this.createMath(tlId, this.followPlanShift(action.position), action.expression, "latex", action.color ?? "black", action.size ?? "m", 0)
   }
 
   private createMath(
@@ -328,7 +402,9 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
       if (shape.id === tlId || shape.type === "image" || shape.meta.recifeLabelOwner || shape.id.endsWith(":highlight")) return []
       const box = this.editor.getShapePageBounds(shape)
       if (!box || (box.w === 0 && box.h === 0)) return []
-      const contains = box.x <= bounds.x && box.y <= bounds.y && box.x + box.w >= bounds.x + bounds.w && box.y + box.h >= bounds.y + bounds.h
+      // A box the writing starts inside, and fits across, is its container (it grows to fit afterwards) - not something to avoid.
+      const contains = box.x <= bounds.x + 4 && box.y <= bounds.y + 4 && box.x + box.w >= bounds.x + bounds.w &&
+        bounds.y < box.y + box.h
       return shape.type === "geo" && contains ? [] : [box]
     })
     const clearAt = (dx: number, dy: number) => {
@@ -484,6 +560,266 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
     this.editor.run(() => { this.deleteObject(action.id); this.plotFunction(next) })
   }
 
+  drawGraph(action: DrawGraphAction): void {
+    const lines = graphLines(action.expressions)
+    const tlId = this.track(action.id, GRAPH_SHAPE_TYPE, "graph", graphSummary(lines))
+    this.editor.createShapes<GraphShape>([{
+      id: tlId, type: GRAPH_SHAPE_TYPE, x: action.position.x, y: action.position.y,
+      props: { w: action.w ?? 520, h: action.h ?? 380, expressions: lines, bounds: action.bounds ?? null },
+    }])
+    this.keepGraphClear(tlId)
+  }
+
+  /**
+   * A piece of lab apparatus from the kit: each part an ordinary draw shape
+   * (outlines, a semi-filled liquid, a flame), grouped so it moves and
+   * deletes as one object - and can still be opened up and edited.
+   */
+  drawApparatus(action: DrawApparatusAction): void {
+    const height = action.height ?? APPARATUS_SHAPE[action.kind].defaultHeight
+    const targetId = action.on ?? action.inside
+    let at: { x: number; y: number }
+    if (targetId) {
+      const target = this.getObjectBounds(targetId)
+      if (!target) throw new Error(`Unknown object "${targetId}" to place the ${action.kind.replace(/_/g, " ")} ${action.on ? "on" : "inside"}: draw it first`)
+      at = placeApparatus(action.kind, height, target, action.on ? "on" : "inside")
+    } else {
+      at = this.followPlanShift(action.position!)
+    }
+    const parts = buildApparatus(action.kind, at.x, at.y, { height, fill: action.fill, lit: action.lit })
+    const outline = action.color ?? "black"
+    const liquid = action.liquid ?? (action.kind === "thermometer" ? "red" : "light-blue")
+    const partIds = parts.map((_, i) => createShapeId(`${action.id}:part-${i}`))
+    parts.forEach((part, i) => this.createOutline(partIds[i], part.points, part.closed, {
+      color: part.role === "liquid" ? liquid : part.role === "flame" ? "orange" : outline,
+      // Solid, so a liquid reads as liquid ("semi" is nearly white on the board).
+      fill: part.role === "liquid" || part.role === "flame" ? "solid" : "none",
+      size: part.role === "body" ? "m" : "s",
+    }))
+    const tlId = this.track(action.id, "group", "apparatus",
+      `${action.kind.replace(/_/g, " ")}${action.label ? ` (${action.label})` : ""}`)
+    this.editor.groupShapes(partIds, { groupId: tlId, select: false })
+    if (action.label) this.labels.set(tlId, action.label, action.color)
+  }
+
+  /**
+   * One straight-edged outline as a draw shape, positioned at its own top-left with relative
+   * points: tldraw draws a very short stroke as a dot at the shape's origin, so an origin far
+   * from the points would misplace it (and stretch any group it's in).
+   */
+  private createOutline(
+    id: TLShapeId,
+    points: { x: number; y: number }[],
+    closed: boolean,
+    style: { color: DrawingColor; fill: "none" | "solid" | "semi"; size: "s" | "m" | "l" }
+  ): void {
+    const originX = Math.min(...points.map((p) => p.x))
+    const originY = Math.min(...points.map((p) => p.y))
+    this.editor.createShapes([{
+      id, type: "draw", x: originX, y: originY,
+      props: {
+        segments: buildDrawSegments(points.map((p) => ({ x: p.x - originX, y: p.y - originY })), "straight", closed),
+        color: style.color, fill: style.fill, dash: "solid", size: style.size,
+        isComplete: true, isClosed: closed, isPen: false,
+      },
+    }])
+  }
+
+  /**
+   * A slope from its angle and which way is downhill: the triangle, the angle's arc and its label,
+   * grouped. The slope is remembered on the group, so blocks placed on it and slope-relative force
+   * directions ("up_slope", "normal"...) use exactly this slope.
+   */
+  drawIncline(action: DrawInclineAction): void {
+    const base = action.base ?? 420
+    const g = inclineGeometry(this.followPlanShift(action.position), base, action.angle, action.downhill)
+    const color = action.color ?? "black"
+    const slopeId = createShapeId(`${action.id}:slope`)
+    const arcId = createShapeId(`${action.id}:angle-arc`)
+    const labelId = createShapeId(`${action.id}:angle-label`)
+    this.createOutline(slopeId, g.triangle, true, { color, fill: "none", size: "m" })
+    this.createOutline(arcId, g.arc, false, { color, fill: "none", size: "s" })
+    // The angle's label: inside the angle when there's room, else just outside the corner, level with the ground.
+    const text = action.angleLabel ?? `$${action.angle}^\\circ$`
+    const { w, h } = measureMath(this.editor, text, "mixed", "s", 0)
+    const at = g.drawnAngle >= 35
+      ? { x: g.labelCentre.x - w / 2, y: g.labelCentre.y - h / 2 }
+      : { x: action.downhill === "right" ? g.corner.x + 10 : g.corner.x - 10 - w, y: g.corner.y - h - 2 }
+    this.editor.createShapes<MathShape>([{ id: labelId, type: MATH_SHAPE_TYPE, x: at.x, y: at.y,
+      props: { text, mode: "mixed", color, size: "s", maxW: 0, w, h } }])
+    const tlId = this.track(action.id, "group", "incline",
+      `slope at ${action.angle}°, downhill to the ${action.downhill}${action.label ? ` (${action.label})` : ""}`)
+    this.editor.groupShapes([slopeId, arcId, labelId], { groupId: tlId, select: false })
+    this.editor.updateShape({ id: tlId, type: "group", meta: {
+      ...this.editor.getShape(tlId)?.meta, recifeSlope: { angle: action.angle, drawnAngle: g.drawnAngle, downhill: action.downhill },
+    } })
+    if (action.label) this.labels.set(tlId, action.label, action.color)
+  }
+
+  /** An object resting on a slope, `at` of the way up it, tilted to match - and remembering the slope it's on. */
+  drawOnIncline(action: DrawOnInclineAction): void {
+    const incline = this.objects.get(action.incline)
+    const slope = incline && this.slopeMeta(incline.tlId)
+    const triangle = incline && this.editor.getShapePageBounds(createShapeId(`${action.incline}:slope`))
+    if (!incline || !slope || !triangle) throw new Error(`"${action.incline}" is not a slope. Draw it with draw_incline first.`)
+    const g = inclineGeometry({ x: triangle.x, y: triangle.y }, triangle.w, slope.angle, slope.downhill)
+    const w = action.w ?? 90
+    const h = action.h ?? 45
+    const { centre, rotation } = blockOnIncline(g, slope.downhill, action.at ?? 0.5, w, h)
+    this.createGeo({
+      type: "create_shape", id: action.id, shape: action.shape ?? "rectangle",
+      x: centre.x - w / 2, y: centre.y - h / 2, w, h, rotation,
+      color: action.color ?? "black", fill: action.fill ?? "none", dash: "solid", size: "m",
+      ...(action.label ? { label: action.label } : {}),
+    })
+    const tlId = this.objects.get(action.id)!.tlId
+    this.editor.updateShape({ id: tlId, type: "geo", meta: { ...this.editor.getShape(tlId)?.meta, recifeSlope: slope } })
+  }
+
+  /** The slope an object is, or rests on. */
+  getObjectSlope(id: string): { drawnAngle: number; downhill: "left" | "right" } | undefined {
+    const tracked = this.objects.get(id)
+    return tracked && this.slopeMeta(tracked.tlId)
+  }
+
+  private slopeMeta(tlId: TLShapeId): { angle: number; drawnAngle: number; downhill: "left" | "right" } | undefined {
+    const slope = this.editor.getShape(tlId)?.meta.recifeSlope as { angle?: unknown; drawnAngle?: unknown; downhill?: unknown } | undefined
+    if (!slope || typeof slope.drawnAngle !== "number" || typeof slope.angle !== "number" || (slope.downhill !== "left" && slope.downhill !== "right")) return undefined
+    return { angle: slope.angle, drawnAngle: slope.drawnAngle, downhill: slope.downhill }
+  }
+
+  /** Where the image the model was shown (question or student-work snapshot) sits on the board. */
+  private imageRegion: ObjectBounds | null = null
+
+  setImageRegion(region: ObjectBounds | null): void {
+    this.imageRegion = region
+  }
+
+  /** The printed words in that image with their pixel boxes (from OCR), when they could be read. */
+  private imageText: OcrResult | null = null
+
+  setImageText(text: OcrResult | null): void {
+    this.imageText = text
+  }
+
+  /**
+   * Highlights printed words exactly where they are: the phrase is looked up in the OCR'd words of
+   * the image and drawn on their real pixel boxes - one mark per line if it wraps. If OCR couldn't
+   * find it, the model's own box estimate is used; if there's neither, nothing is drawn (the lesson
+   * carries on rather than failing over one highlight).
+   */
+  highlightText(action: HighlightTextAction): void {
+    const region = this.imageRegion
+    if (!region) throw new Error("There is no question image on the board to highlight. Point at things with arrows and labels instead.")
+    const found = this.imageText && findPhrase(this.imageText, action.text, action.occurrence ?? 1)
+    const targets = found
+      ? found.map((rect) => pixelRectToPage(rect, this.imageText!, region))
+      : action.box ? [imageBoxToPage(action.box, region)] : []
+    if (targets.length === 0) return
+    const style = action.style ?? "highlight"
+    const color = action.color ?? (style === "highlight" ? "yellow" : "red")
+    const partIds = targets.map((_, i) => createShapeId(targets.length === 1 ? action.id : `${action.id}:line-${i}`))
+    const single = partIds.length === 1
+    // Registered before the shapes exist, so they're tagged with this id as they're created (and found again after a reload).
+    const tlId = this.track(action.id, single ? (style === "underline" ? "draw" : "geo") : "group", "shape", `highlight: ${action.text}`)
+    targets.forEach((target, i) => {
+      if (style === "underline") {
+        const { start, end } = underlineFor(target)
+        this.createOutline(partIds[i], [start, end], false, { color, fill: "none", size: "s" })
+        return
+      }
+      // A highlighter mark covers the words with a little bleed; outlines hug them.
+      const area = style === "circle" ? circleOutline(target)
+        : style === "box" ? boxOutline(target)
+        : { x: target.x - 2, y: target.y - 1, w: target.w + 4, h: target.h + 2 }
+      this.editor.createShapes([{
+        id: partIds[i], type: "geo", x: area.x, y: area.y,
+        ...(style === "highlight" ? { opacity: 0.4 } : {}),
+        props: {
+          geo: style === "circle" ? "ellipse" : "rectangle", w: Math.max(2, area.w), h: Math.max(2, area.h),
+          color, fill: style === "highlight" ? "solid" : "none", dash: "solid", size: "s", richText: toRichText(""),
+        },
+      }])
+    })
+    if (!single) this.editor.groupShapes(partIds, { groupId: tlId, select: false })
+    if (action.label) this.labels.set(tlId, action.label, action.color)
+  }
+
+  /** A box, circle or underline exactly around something the model found in that image. */
+  markImage(action: MarkImageAction): void {
+    if (!this.imageRegion) throw new Error("There is no question image on the board to mark. Point at things with arrows and labels instead.")
+    const target = imageBoxToPage(action.box, this.imageRegion)
+    const color = action.color ?? "red"
+    if (action.style === "underline") {
+      const { start, end } = underlineFor(target)
+      this.drawLine({ type: "draw_line", id: action.id, points: [start, end], color, size: "s" })
+      return
+    }
+    const outline = action.style === "circle" ? circleOutline(target) : boxOutline(target)
+    this.createGeo({
+      type: "create_shape", id: action.id, shape: action.style === "circle" ? "ellipse" : "rectangle",
+      x: outline.x, y: outline.y, w: Math.max(outline.w, 2), h: Math.max(outline.h, 2),
+      color, fill: "none", dash: "solid", size: "s", ...(action.label ? { label: action.label } : {}),
+    })
+  }
+
+  /**
+   * A new graph never hides what's already there (an earlier graph, working,
+   * the question): if it lands on anything, it moves right past it, staying
+   * in the same row, until it's in clear space.
+   */
+  private keepGraphClear(tlId: TLShapeId): void {
+    const MARGIN = 40
+    const planned = this.editor.getShapePageBounds(tlId)
+    const others = this.editor.getCurrentPageShapes()
+      .filter((shape) => shape.id !== tlId)
+      .flatMap((shape) => { const box = this.editor.getShapePageBounds(shape); return box && box.w > 0 && box.h > 0 ? [box] : [] })
+    for (let attempt = 0; attempt < 50; attempt++) {
+      const bounds = this.editor.getShapePageBounds(tlId)
+      if (!bounds) break
+      const padded = { x: bounds.x - MARGIN, y: bounds.y - MARGIN, w: bounds.w + 2 * MARGIN, h: bounds.h + 2 * MARGIN }
+      const hit = others.find((other) => regionsIntersect(padded, other))
+      if (!hit) break
+      const shape = this.editor.getShape(tlId)!
+      this.editor.updateShape({ id: tlId, type: shape.type, x: shape.x + (hit.x + hit.w + MARGIN - bounds.x) })
+    }
+    const placed = this.editor.getShapePageBounds(tlId)
+    if (planned && placed && (placed.x !== planned.x || placed.y !== planned.y)) {
+      // Notes this plan puts around the graph should travel with it.
+      this.planShifts.push({ area: { x: planned.x, y: planned.y, w: planned.w, h: planned.h }, dx: placed.x - planned.x, dy: placed.y - planned.y })
+    }
+  }
+
+  /** Graphs this plan had to move, so writing planned beside them can move the same way. */
+  private planShifts: { area: { x: number; y: number; w: number; h: number }; dx: number; dy: number }[] = []
+
+  /** Called at the start of each lesson: earlier lessons' graph moves don't apply to new writing. */
+  beginPlan(): void {
+    this.planShifts = []
+  }
+
+  /** Where a point the model planned near a since-moved graph should actually go. */
+  private followPlanShift(point: { x: number; y: number }): { x: number; y: number } {
+    const NEAR = 260
+    for (const shift of [...this.planShifts].reverse()) {
+      const { area } = shift
+      if (point.x >= area.x - NEAR && point.x <= area.x + area.w + NEAR && point.y >= area.y - NEAR && point.y <= area.y + area.h + NEAR) {
+        return { x: point.x + shift.dx, y: point.y + shift.dy }
+      }
+    }
+    return point
+  }
+
+  updateGraph(action: UpdateGraphAction): void {
+    const tracked = this.requireTracked(action.id)
+    const shape = this.editor.getShape<GraphShape>(tracked.tlId)
+    if (shape?.type !== GRAPH_SHAPE_TYPE) throw new Error(`"${action.id}" is not a graph. Use draw_graph for a new one.`)
+    const props: Partial<GraphShape["props"]> = {}
+    if (action.expressions) props.expressions = graphLines(action.expressions)
+    if (action.bounds) props.bounds = action.bounds
+    this.editor.updateShape<GraphShape>({ id: tracked.tlId, type: GRAPH_SHAPE_TYPE, props })
+  }
+
   private buildLineShape(
     id: TLShapeId,
     points: { x: number; y: number }[],
@@ -536,6 +872,8 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
       geo: ["color", "size", "dash", "fill", "text", "w", "h", "opacity", "rotation"],
       text: ["color", "size", "text", "w", "opacity"],
       [MATH_SHAPE_TYPE]: ["color", "size", "text", "w", "opacity"],
+      [GRAPH_SHAPE_TYPE]: ["w", "h", "opacity"],
+      group: ["opacity"],
       arrow: ["color", "size", "dash", "text", "opacity"],
       line: ["color", "size", "dash", "opacity"],
       draw: ["color", "size", "dash", "fill", "opacity"],
@@ -847,6 +1185,7 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
   private liveLabel(tracked: TrackedObject): { label?: string } {
     const own = this.editor.getShape(tracked.tlId)
     if (own?.type === MATH_SHAPE_TYPE) return { label: own.props.text.slice(0, 200) }
+    if (own?.type === GRAPH_SHAPE_TYPE) return { label: graphSummary(own.props.expressions).slice(0, 200) }
     const typesetLabel = this.labels.textOf(tracked.tlId)
     if (typesetLabel) return { label: typesetLabel.slice(0, 200) }
     const shape = this.labels.get(tracked.tlId) ?? own

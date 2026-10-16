@@ -4,9 +4,10 @@ import { useState } from "react"
 import { Tldraw, useValue, type Editor } from "tldraw"
 import "tldraw/tldraw.css"
 import { MathShapeUtil } from "@/lib/drawing/math-shape"
+import { GraphShapeUtil } from "@/lib/drawing/graph-shape"
 
 // Module-level so tldraw sees a stable array across renders.
-const shapeUtils = [MathShapeUtil]
+const shapeUtils = [MathShapeUtil, GraphShapeUtil]
 /** A quiet first-run hint, shown only while the board has nothing on it yet. */
 function WhiteboardEmptyHint({ editor }: { editor: Editor | null }) {
   const isEmpty = useValue(

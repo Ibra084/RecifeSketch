@@ -6,7 +6,7 @@ import { GeminiProvider } from "@/lib/ai/gemini-provider"
 import { MAX_QUESTION_LENGTH, runTeachingPipeline, type TeachingPipelineFailure } from "@/lib/ai/pipeline"
 import type { AIProvider } from "@/lib/ai/provider"
 import { createRateLimiter, type RateLimiter } from "@/lib/ai/rate-limiter"
-import { resolveTeachingPlanIds } from "@/lib/ai/teaching-protocol"
+import { protectEarlierWork, resolveTeachingPlanIds } from "@/lib/ai/teaching-protocol"
 import { questionSourceSchema } from "@/lib/ai/question-source"
 
 /**
@@ -120,7 +120,9 @@ export async function handleTutorRequest(request: Request, deps: TutorRouteDeps)
     )
   }
 
-  const resolvedPlan = resolveTeachingPlanIds(result.plan, existingIdsFrom(context))
+  const existingIds = existingIdsFrom(context)
+  // Earlier work (e.g. a previous graph) is never deleted unless the student asked for that.
+  const resolvedPlan = protectEarlierWork(resolveTeachingPlanIds(result.plan, existingIds), existingIds, parsedBody.data.question)
   return NextResponse.json({ ok: true, plan: resolvedPlan, usage: result.usage }, { status: 200 })
 }
 

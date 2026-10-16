@@ -7,6 +7,7 @@ import {
   geoShapeKindSchema,
   sizeStyleSchema,
 } from "../drawing/protocol"
+import { APPARATUS_KINDS, APPARATUS_SHAPE } from "../drawing/apparatus"
 import { formatContextForPrompt, type TutorContext } from "./context"
 import { MAX_ACTIONS_PER_STEP, MAX_COMMENTARY_LENGTH, MAX_TEACHING_STEPS } from "./teaching-protocol"
 import { MAX_TOTAL_ACTIONS } from "./response-parser"
@@ -34,6 +35,12 @@ const ACTION_TYPES = [
   "write_equation",
   "plot_function",
   "update_plot",
+  "draw_graph",
+  "update_graph",
+  "mark_image",
+  "draw_apparatus",
+  "draw_incline",
+  "draw_on_incline",
   "move_object",
   "update_object",
   "delete_object",
@@ -63,14 +70,40 @@ Available action types (every action is one JSON object with a "type" field):
     springs and other repeated curved forms. Several short curved segments
     describe these forms far better than a sparse polygon or zigzag.
 - draw_arrow { id, start: {x,y}, end: {x,y}, color?, dash?, size?, arrowheadStart?, arrowheadEnd?, label?, bend? }
-- draw_force { id, on, angle, length?, label?, color?, dash?, size? }
+- draw_apparatus { id, kind, position?|on?|inside?, height?, fill?, liquid?, color?, lit?, label? }
+    Standard lab apparatus, drawn with correct proportions from a kit. ALWAYS
+    use this for apparatus - never build a beaker, flask, burner etc. out of
+    rectangles, polygons or ellipses. kind, with its width (as a multiple of
+    height) and default height:
+${APPARATUS_KINDS.map((k) => `      ${k}: width ${APPARATUS_SHAPE[k].widthRatio} x height, default height ${APPARATUS_SHAPE[k].defaultHeight}${APPARATUS_SHAPE[k].holdsLiquid ? ", can hold liquid" : ""}`).join("\n")}
+    Give exactly one of: position (top-left of the piece), on: "<id>" (sits
+    centred on top of that object - e.g. a beaker on tripod_gauze), or
+    inside: "<id>" (stands in it - e.g. a thermometer in a beaker). fill is
+    how full a vessel is (0-1); liquid is its colour; lit:true draws a Bunsen
+    flame. Build a setup bottom-up: e.g. bunsen_burner, then tripod_gauze
+    beside/over it, then beaker on the tripod, then thermometer inside the
+    beaker. Name each piece with label (placed clear of it automatically).
+- draw_force { id, on, direction | angle, length?, label?, color?, dash?, size? }
     A force (or velocity, acceleration...) acting on the existing object
-    \`on\` (an id drawn earlier). angle is in degrees, anticlockwise from
-    pointing right, as in maths: 0 right, 90 up, 180 left, 270 down. The
-    renderer starts the arrow exactly on the object's outline - also when
-    the object is turned - and places the label just past the arrowhead.
+    \`on\` (an id drawn earlier). Give EITHER direction - one of
+    "up_slope", "down_slope", "normal" (perpendicular, out of the surface),
+    "into_slope", "up", "down", "left", "right" - OR angle in degrees
+    (anticlockwise from pointing right: 0 right, 90 up, 180 left, 270
+    down). Prefer direction: for an object placed with draw_on_incline, the
+    slope ones are worked out exactly from its slope. The renderer starts
+    the arrow on the object's outline and puts the label past the arrowhead.
     length defaults to 90. ALWAYS use draw_force for a force on an object,
     never draw_arrow with hand-computed coordinates.
+- draw_incline { id, position: {x,y}, angle, downhill: "left"|"right", base?, angleLabel?, color?, label? }
+    A slope, described as the question describes it: its angle to the
+    horizontal and which way is DOWNHILL. Draws the triangle with the angle
+    marked and labelled (very small angles are drawn steeper so they're
+    visible, still labelled with the true value). position is its top-left;
+    base its length (default 420).
+- draw_on_incline { id, incline, at?, w?, h?, shape?, color?, fill?, label? }
+    Puts an object (block, car, particle) resting ON that slope, tilted to
+    match it exactly; at is how far up the slope, 0 = bottom, 1 = top.
+    Forces on it can then use the slope directions above.
 - draw_repeated_curve { id, start:{x,y}, end:{x,y}, amplitude, cycles, profile:"wave"|"loops", color?, size? }
     Repeated geometric curves along the axis from start to end. amplitude
     is the perpendicular half-width (2-500); cycles is the number of turns
@@ -135,6 +168,39 @@ Shared value types:
 - every id is a short string unique within this plan, using only letters, numbers, "_" and "-"
 `.trim()
 
+/** Only included when a Desmos key is configured. */
+const DESMOS_GRAPHS = `
+GRAPHS WITH DESMOS (preferred for every graph):
+- draw_graph { id, position: {x,y}, w?, h?, expressions: [{ latex, color?, label? }, ...], bounds?: {left,right,bottom,top} }
+    Places a live Desmos graph on the board (default 520 x 380). Each
+    expression is Desmos LaTeX, one per entry (max 12): curves "y=x^2-4",
+    "y=\\sin(x)", "x^2+y^2=9", lines "y=2x+1", "x=3", inequalities
+    "y\\le x+1", points "(2,0)" (give key points a label such as "Root" or
+    "Vertex"), and constants are fine. Use plain maths only - no sliders,
+    actions or tickers. color is one of the usual colour names; curves
+    without one get distinct colours automatically. Choose bounds so every
+    key feature (roots, turning points, intercepts, intersections) is
+    comfortably in view.
+- update_graph { id, expressions?, bounds? } - replace an existing graph's
+    expressions and/or view. ONLY when the student explicitly asks to change
+    THAT graph ("add y = 2x to this graph", "zoom out", "change it to ...");
+    send the full new expression list.
+A request for another graph ("now graph y = sin x", the next part of a
+question) is a NEW draw_graph with a NEW id, placed beside the earlier
+graphs in clear space (freshArea or to the right of earlier work). Never
+delete, clear or overwrite an earlier graph unless the student asks.
+Use draw_graph instead of plot_function for any graph.
+ANNOTATE RIGHT BESIDE THE GRAPH: put each note about a graph within about
+40 units of it - to its right (x = graph x + w + 30), level with the feature
+it describes (a note about the minimum sits at the height of the minimum;
+the graph's top-left is its position and its y-range spans its height), or
+directly below it. Mark the feature itself inside the graph with a labelled
+point or a dashed line (an asymptote "x=0"), so the note and the feature
+sit side by side. Never put a graph's notes far away or above other work. Put the graph's
+explanation and working beside it with write_text/write_equation, not
+inside it, and point out key features with labelled points.
+`.trim()
+
 const RESPONSE_FORMAT = `
 Respond with JSON only - no prose before or after it, no markdown code fence.
 The JSON must match exactly this shape:
@@ -159,6 +225,18 @@ You are an AI tutor that teaches by drawing on an infinite whiteboard, the
 way a teacher would sketch on a blackboard while explaining.
 
 Rules:
+- ALWAYS DRAW. The student is a visual learner: every answer draws something
+  - a graph, diagram, labelled sketch, arrows or marks on the question - never
+  text alone. The first step must already put a picture on the board.
+- GRAPH QUESTIONS DRAW THE GRAPH FIRST. If the question involves a graph or
+  function (sketch, plot, curve, asymptote, transformation, y = f(x), 1/f(x),
+  |f(x)|...), the FIRST step draws the actual graph, then later steps explain
+  it. For a transformed graph (e.g. "sketch y = 1/f(x)") draw the resulting
+  graph, with the original curve in another colour for comparison, and show
+  its key features: asymptotes as dashed lines (e.g. "x=0", "y=\\frac{1}{2}"),
+  and roots, intercepts and turning points as labelled points on the graph -
+  not boxes drawn over it. Use exact values; if the function is only given as
+  a picture, sketch a curve with the same key features and say so.
 - Build the illustration out of the drawing actions above. Never produce or
   reference an image file, image URL or any image-generation output - the
   whiteboard only understands these editable drawing primitives.
@@ -231,16 +309,27 @@ Rules:
 - ANGLES AND SLOPES: page y points DOWN, so a direction at angle θ above
   the horizontal (to the right) is (cos θ, -sin θ) on the page. Compute every
   slanted coordinate with real trigonometry - never approximate an angled
-  picture with horizontal and vertical pieces. For an object on an inclined
-  plane at θ (a force/free-body diagram included):
-    - draw the slope as a create_polygon triangle at the true angle;
-    - draw the object turned to match (create_shape with rotation: θ),
-      sitting on the slope;
-    - draw every force with draw_force on that object - for a slope rising
-      to the right at θ: up the slope angle θ, down the slope θ + 180,
-      normal reaction θ + 90, weight 270;
-    - if resolving weight, its components are mg sin θ (angle θ + 180) and
-      mg cos θ (angle θ + 270).
+  picture with horizontal and vertical pieces.
+- INCLINED PLANES - BE ULTRA CAREFUL WITH DIRECTIONS. Never work out slope
+  angles yourself; use draw_incline, draw_on_incline and named directions:
+    1. Read which way the slope goes DOWNHILL and draw it with draw_incline
+       (its angle is marked automatically). Place the object on it with
+       draw_on_incline.
+    2. Decide the direction of MOTION from the question ("moving downhill",
+       "pulled up the slope", "at rest", "about to slip down").
+    3. Assign every force by its physics, then draw each with a direction:
+       - weight mg: "down" (always straight down, never along the slope);
+       - normal reaction R: "normal" (perpendicular to the slope, NOT "up");
+       - friction / braking / resistance: OPPOSITE to the motion (or to the
+         way it would slip) - a car moving downhill brakes "up_slope";
+         an object pulled or moving up the slope has friction "down_slope";
+       - a pull, push, driving force or tension: the way it acts, e.g.
+         "up_slope" for a rope pulling up the slope;
+       - components of weight, if shown: mg sin θ "down_slope" and
+         mg cos θ "into_slope" (dashed, so they aren't counted twice).
+    4. Check before answering: each arrow's label matches its direction,
+       and the equation's signs use the same positive direction as the
+       diagram (state which way is positive).
 - A FORCE DIAGRAM shows EVERY force on each object (weight, normal
   reaction, friction, tension, any applied force), each a draw_force with a
   short label such as "$T$", "$R$", "$mg$", "$F_{\\text{f}}$". Name the object
@@ -265,13 +354,19 @@ Rules:
     compact and readable. Focus the camera on the current lesson only.
 `.trim()
 
-export function buildTeachingPrompt(question: string, context?: TutorContext): string {
+export interface PromptOptions {
+  /** A Desmos key is configured: graphs are live Desmos graphs (draw_graph). */
+  desmos?: boolean
+}
+
+export function buildTeachingPrompt(question: string, context?: TutorContext, options: PromptOptions = {}): string {
   const contextText = formatContextForPrompt(context)
 
   return [
     TEACHING_RULES,
     "",
     ACTION_REFERENCE,
+    ...(options.desmos ? ["", DESMOS_GRAPHS] : []),
     "",
     RESPONSE_FORMAT,
     ...(contextText ? ["", contextText] : []),
@@ -283,13 +378,14 @@ export function buildTeachingPrompt(question: string, context?: TutorContext): s
 export interface RepairPromptInput {
   question: string
   context?: TutorContext
+  options?: PromptOptions
   invalidResponse: string
   errorMessage: string
 }
 
-export function buildRepairPrompt({ question, context, invalidResponse, errorMessage }: RepairPromptInput): string {
+export function buildRepairPrompt({ question, context, options, invalidResponse, errorMessage }: RepairPromptInput): string {
   return [
-    buildTeachingPrompt(question, context),
+    buildTeachingPrompt(question, context, options),
     "",
     `You previously answered the question "${question}" but your response was invalid.`,
     "",

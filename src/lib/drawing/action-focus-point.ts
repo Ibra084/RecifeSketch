@@ -38,11 +38,22 @@ export function actionFocusPoint(action: DrawingAction): Point | null {
     case "write_text":
     case "write_equation":
       return action.position
+    case "draw_apparatus":
+      return action.position ?? null
+    case "draw_incline":
+      return action.position
+    case "draw_on_incline":
+      return null
+    case "draw_graph":
+      return { x: action.position.x + (action.w ?? 520) / 2, y: action.position.y + (action.h ?? 380) / 2 }
     case "plot_function":
       return action.position ?? { x: 0, y: 0 }
     case "clear_region":
       return { x: action.region.x + action.region.w / 2, y: action.region.y + action.region.h / 2 }
     case "draw_force": // placed relative to its object, which may not exist yet
+    case "update_graph":
+    case "mark_image": // positioned relative to the image the model saw
+    case "highlight_text":
     case "move_object":
     case "update_object":
     case "update_plot":
@@ -80,6 +91,8 @@ export function actionFocusRect(action: DrawingAction): { x: number; y: number; 
       return boundingBox([action.start, action.end])
     case "clear_region":
       return action.region
+    case "draw_graph":
+      return { x: action.position.x, y: action.position.y, w: action.w ?? 520, h: action.h ?? 380 }
     default: {
       const point = actionFocusPoint(action)
       return point ? { x: point.x, y: point.y, w: 1, h: 1 } : null

@@ -75,7 +75,15 @@ describe("buildTeachingPrompt", () => {
     expect(prompt).toMatch(/rotation is in degrees, anticlockwise/)
     expect(prompt).toMatch(/page y points DOWN/)
     expect(prompt).toContain("(cos θ, -sin θ)")
-    expect(prompt).toMatch(/normal reaction θ \+ 90, weight 270/)
+  })
+
+  it("makes slope directions come from the physics, not the model's own angle arithmetic", () => {
+    const prompt = buildTeachingPrompt("A car brakes on a road sloping downhill at 6 degrees")
+    expect(prompt).toMatch(/INCLINED PLANES - BE ULTRA CAREFUL WITH DIRECTIONS/)
+    expect(prompt).toMatch(/a car moving downhill brakes "up_slope"/)
+    expect(prompt).toMatch(/weight mg: "down"/)
+    expect(prompt).toMatch(/normal reaction R: "normal"/)
+    expect(prompt).toContain("draw_incline { id, position: {x,y}, angle, downhill:")
   })
 
   it("requires draw_force for every force, with every force shown and objects named by their label", () => {
@@ -105,7 +113,7 @@ describe("buildTeachingPrompt", () => {
     const context: TutorContext = {
       objects: [{ id: "primary-coil", kind: "shape", label: "Primary coil", x: 0, y: 0, w: 100, h: 50 }],
       history: [
-        { question: "Explain how a transformer works.", concept: "Transformers", lastCommentary: "Drew the coils." },
+        { question: "Explain how a transformer works.", concept: "Transformers", explanation: "Drew the coils." },
       ],
     }
     const prompt = buildTeachingPrompt("Why does it need alternating current?", context)
@@ -144,5 +152,40 @@ describe("buildRepairPrompt", () => {
       errorMessage: "err",
     })
     expect(prompt.toLowerCase()).toMatch(/fix|correct|invalid/)
+  })
+})
+
+describe("Desmos graphs", () => {
+  it("offers draw_graph only when a Desmos key is configured", () => {
+    expect(buildTeachingPrompt("Sketch y = x^2", undefined, { desmos: true })).toMatch(/Use draw_graph instead of plot_function/)
+    expect(buildTeachingPrompt("Sketch y = x^2")).not.toMatch(/draw_graph \{/)
+  })
+})
+
+describe("keeping earlier graphs", () => {
+  it("tells the model a new graph is a new draw_graph, and update_graph only edits on request", () => {
+    const prompt = buildTeachingPrompt("Now graph y = sin x", undefined, { desmos: true })
+    expect(prompt).toMatch(/is a NEW draw_graph with a NEW id/)
+    expect(prompt).toMatch(/ONLY when the student explicitly asks to change/)
+    expect(prompt).toMatch(/Never\s+delete, clear or overwrite an earlier graph/)
+  })
+})
+
+describe("graph annotations", () => {
+  it("asks for notes right beside the graph, level with the feature they describe", () => {
+    const prompt = buildTeachingPrompt("Sketch y = 1/f(x)", undefined, { desmos: true })
+    expect(prompt).toMatch(/ANNOTATE RIGHT BESIDE THE GRAPH/)
+    expect(prompt).toMatch(/level with the feature/)
+  })
+})
+
+describe("lab apparatus", () => {
+  it("documents every apparatus kind and requires the kit for apparatus", () => {
+    const prompt = buildTeachingPrompt("Draw a beaker heated over a Bunsen burner")
+    for (const kind of ["beaker", "conical_flask", "bunsen_burner", "tripod_gauze", "thermometer", "clamp_stand"]) {
+      expect(prompt).toContain(`      ${kind}: width`)
+    }
+    expect(prompt).toMatch(/ALWAYS\s+use this for apparatus/)
+    expect(prompt).toMatch(/on: "<id>"/)
   })
 })

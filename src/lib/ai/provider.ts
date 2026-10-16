@@ -16,7 +16,7 @@ export type TeachingPlanFailure =
   | { kind: "timeout" }
   | { kind: "rate_limited" }
   | { kind: "invalid_output"; detail: string }
-  | { kind: "provider_error"; detail: string }
+  | { kind: "provider_error"; detail: string; httpStatus?: number }
   | { kind: "cancelled" }
 
 export interface TeachingPlanSuccess {

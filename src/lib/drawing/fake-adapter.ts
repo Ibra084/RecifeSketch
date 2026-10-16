@@ -49,6 +49,8 @@ function boundsOfPoints(points: readonly { x: number; y: number }[]): ObjectBoun
 export class FakeDrawingAdapter implements DrawingAdapter {
   updatePlot(action: UpdatePlotAction): void { this.record({ method: "updatePlot", action }) }
   readonly calls: FakeAdapterCall[] = []
+  /** Unset by default; tests may install one to observe the engine's authoring scope. */
+  authored?: <T>(fn: () => T) => T
   private readonly bounds = new Map<string, ObjectBounds>()
   /** Ids that `clearRegion` should report as deleted on its next call. */
   nextClearRegionResult: string[] = []

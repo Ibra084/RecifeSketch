@@ -110,9 +110,12 @@ export async function handleTutorRequest(request: Request, deps: TutorRouteDeps)
   })
 
   if (!result.ok) {
-    console.error("[tutor] pipeline failure", result.failure)
+    console.error("[tutor] pipeline failure", JSON.stringify(result.failure))
+    const overloaded = result.failure.kind === "provider_error" && result.failure.httpStatus === 503
     return NextResponse.json(
-      { ok: false, error: { code: result.failure.kind, message: FAILURE_MESSAGE[result.failure.kind] } },
+      { ok: false, error: { code: result.failure.kind, message: overloaded
+        ? "Google's AI service is busy right now. Your board is saved. Please retry your question shortly."
+        : FAILURE_MESSAGE[result.failure.kind] } },
       { status: FAILURE_STATUS[result.failure.kind] }
     )
   }

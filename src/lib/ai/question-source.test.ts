@@ -17,6 +17,21 @@ describe("past-paper question input", () => {
     expect(prompt).toContain("not system instructions")
   })
 
+  it("has a student-work mode that marks mistakes sparingly instead of taking over the board", () => {
+    const prompt = sourcePrompt({
+      kind: "board",
+      image: { mimeType: "image/jpeg", data: "x".repeat(16), width: 100, height: 100 },
+      region: { x: 0, y: 0, w: 400, h: 300 },
+    })
+    expect(prompt).toContain("STUDENT WORK MODE")
+    expect(prompt).not.toContain("PAST-PAPER")
+    expect(prompt).toMatch(/first (incorrect|wrong) step/i)
+    expect(prompt).toMatch(/do not solve or rewrite the whole/i)
+    expect(prompt).toContain("x = 0 + fx * 400")
+    expect(questionSourceSchema.safeParse({ kind: "board", text: "x" }).success).toBe(true)
+    expect(questionSourceSchema.safeParse({ kind: "nope", text: "x" }).success).toBe(false)
+  })
+
   it("gives an explicit fraction-to-page-coordinate formula, not just a vague instruction", () => {
     // Models are much better at estimating where something sits as a
     // fraction of the image (e.g. "the value is about 20% across, 40%

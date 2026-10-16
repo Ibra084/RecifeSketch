@@ -13,7 +13,45 @@ import { TldrawDrawingAdapter } from "@/lib/drawing/tldraw-adapter"
 import { DrawingPlayer } from "@/lib/drawing/playback/player"
 import { TldrawShapeAnimator } from "@/lib/drawing/playback/tldraw-animator"
 import { cn, prefersReducedMotion } from "@/lib/utils"
-import { placeQuestionSheet } from "@/lib/drawing/question-sheet"
+import { placeQuestionSheet, findUnattachedQuestionImage, markQuestionSourceAttached } from "@/lib/drawing/question-sheet"
+import { readQuestionImageBlob } from "@/components/chat/question-image"
+import { actionFocusPoint } from "@/lib/drawing/action-focus-point"
+import type { DrawingSequence } from "@/lib/drawing/playback/types"
+
+interface CursorState {
+  x: number
+  y: number
+  label: string
+}
+
+/**
+ * A visible pointer that moves to wherever the AI is currently drawing,
+ * with that step's commentary shown right there on the board - so a
+ * student can see where to look instead of only reading disconnected
+ * chat text. The full commentary still goes to chat too, as the
+ * reviewable log; this is a spatial complement to it, not a replacement.
+ */
+function AiCursorOverlay({ cursor }: { cursor: CursorState | null }) {
+  if (!cursor) return null
+  return (
+    <div
+      className="pointer-events-none absolute z-30 -translate-x-1/2 -translate-y-1/2 transition-[left,top] duration-500 ease-[var(--ease-premium)]"
+      style={{ left: cursor.x, top: cursor.y }}
+    >
+      <div className="flex flex-col items-center">
+        <span className="h-3 w-3 shrink-0 rounded-full bg-accent ring-4 ring-accent-subtle" />
+        {cursor.label && (
+          <div
+            className="mt-2 max-w-[240px] rounded-xl border border-border-subtle bg-surface px-3 py-2 text-[12px] leading-relaxed text-ink"
+            style={{ boxShadow: "var(--shadow-popover)" }}
+          >
+            {cursor.label}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
 
 // tldraw touches browser-only APIs (IndexedDB, window) during setup, so it
 // must never render on the server.
@@ -43,6 +81,23 @@ export function AppShell() {
   const animatorRef = useRef<TldrawShapeAnimator | null>(null)
   const playerRef = useRef<DrawingPlayer | null>(null)
 
+  const [cursor, setCursor] = useState<CursorState | null>(null)
+
+  const resolveStepFocusPoint = useCallback((sequence: DrawingSequence, stepIndex: number) => {
+    const step = sequence[stepIndex]
+    const adapter = adapterRef.current
+    if (!step) return null
+    for (const action of step.actions) {
+      const point = actionFocusPoint(action)
+      if (point) return point
+      if ("id" in action && adapter) {
+        const bounds = adapter.getObjectBounds(action.id)
+        if (bounds) return { x: bounds.x + bounds.w / 2, y: bounds.y + bounds.h / 2 }
+      }
+    }
+    return null
+  }, [])
+
   const handleEditorMount = useCallback((editor: Editor) => {
     editorRef.current = editor
     adapterRef.current?.dispose()
@@ -55,7 +110,7 @@ export function AppShell() {
 
   const [boardController] = useState<WhiteboardController>(() => ({
     isReady: () => engineRef.current !== null && animatorRef.current !== null,
-    play: async (sequence, onStepStart) => {
+    play: async (sequence, stepCommentary, onStepStart) => {
       const engine = engineRef.current
       const animator = animatorRef.current
       if (!engine || !animator) throw new Error("Whiteboard not ready")
@@ -76,6 +131,13 @@ export function AppShell() {
         if (snapshot.state === "drawing" && snapshot.stepIndex !== announcedStepIndex) {
           announcedStepIndex = snapshot.stepIndex
           onStepStart(snapshot.stepIndex)
+
+          const point = resolveStepFocusPoint(sequence, snapshot.stepIndex)
+          const editor = editorRef.current
+          if (point && editor) {
+            const screen = editor.pageToScreen(point)
+            setCursor({ x: screen.x, y: screen.y, label: stepCommentary[snapshot.stepIndex] ?? "" })
+          }
         }
       })
 
@@ -85,6 +147,7 @@ export function AppShell() {
       } finally {
         unsubscribe()
         playerRef.current = null
+        setCursor(null)
       }
     },
     cancel: () => playerRef.current?.cancel(),
@@ -96,6 +159,18 @@ export function AppShell() {
     questionBounds: (id) => {
       const box = editorRef.current?.getShapePageBounds(id)
       return box ? { x: box.x, y: box.y, w: box.w, h: box.h } : undefined
+    },
+    findUnattachedQuestionImage: () => {
+      const editor = editorRef.current
+      return editor ? findUnattachedQuestionImage(editor) : undefined
+    },
+    exportQuestionImage: async (id) => {
+      const editor = editorRef.current
+      if (!editor) throw new Error("Whiteboard not ready")
+      const { blob } = await editor.toImage([id], { format: "jpeg", quality: 0.85, background: true })
+      const image = await readQuestionImageBlob(blob)
+      markQuestionSourceAttached(editor, id)
+      return image
     },
   }))
 
@@ -121,6 +196,7 @@ export function AppShell() {
       <div className="relative flex flex-1 overflow-hidden">
         <div className="relative flex-1">
           <WhiteboardSection onEditorMount={handleEditorMount} />
+          <AiCursorOverlay cursor={cursor} />
         </div>
 
         <aside

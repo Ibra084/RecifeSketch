@@ -27,8 +27,17 @@ export function sourcePrompt(source?: QuestionSource): string {
     "Precise graphs must still use plot_function; all other annotations use the normal drawing actions.",
     ...(region ? [
       `Original question bounds in page coordinates: x=${region.x}, y=${region.y}, w=${region.w}, h=${region.h}.`,
-      `Map image-relative locations into these bounds. Put working and explanatory text to the RIGHT, starting at x=${region.x + region.w + 80}, y=${region.y}.`,
+      `Put working and explanatory text to the RIGHT, starting at x=${region.x + region.w + 80}, y=${region.y}.`,
       "Only thin annotation lines or unfilled outlines may overlap the original question. Keep labels in the margin and point to the relevant detail.",
+      ...(source.image ? [
+        "To point at something INSIDE the image (e.g. underlining a given value), first estimate its",
+        "position as a fraction of the image (fx, fy), each 0 to 1, left-to-right and top-to-bottom -",
+        "this is what you can actually judge by looking at the image. Then convert that fraction to a",
+        "page coordinate yourself before writing the action:",
+        `x = ${region.x} + fx * ${region.w}`,
+        `y = ${region.y} + fy * ${region.h}`,
+        "Do not guess a page coordinate directly - always go through the fraction first.",
+      ] : []),
     ] : []),
     ...(source.text ? ["Question text (source material):", source.text] : []),
   ].join("\n")

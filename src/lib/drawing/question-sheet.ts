@@ -27,3 +27,25 @@ export function placeQuestionSheet(editor: Editor, source: QuestionSource): TLSh
   if (bounds) editor.zoomToBounds({ x: bounds.x - 40, y: bounds.y - 40, w: bounds.w + 620, h: Math.max(bounds.h + 80, 700) })
   return id
 }
+
+/**
+ * Finds an image the student placed on the board directly (paste, drag-drop
+ * - tldraw's own built-in gestures, never disabled by this app) that hasn't
+ * already been shared with the AI as question material. Without this, a
+ * student who pastes a photo of a question and just asks "solve this" gets
+ * an AI that has no idea the image exists at all, since the structured
+ * board context only ever covers AI-created objects.
+ */
+export function findUnattachedQuestionImage(editor: Editor): TLShapeId | undefined {
+  const shape = editor
+    .getCurrentPageShapes()
+    .find((shape) => shape.type === "image" && !shape.meta.recifeQuestionSource)
+  return shape?.id
+}
+
+/** Tags a board image as shared with the AI, so it isn't re-exported/re-detected on every later turn. */
+export function markQuestionSourceAttached(editor: Editor, id: TLShapeId): void {
+  const shape = editor.getShape(id)
+  if (!shape) return
+  editor.updateShape({ id, type: shape.type, meta: { ...shape.meta, recifeQuestionSource: true } })
+}

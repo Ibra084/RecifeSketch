@@ -33,11 +33,24 @@ export interface WhiteboardController {
   placeQuestion(source: QuestionSource): TLShapeId
   questionBounds(id: TLShapeId): QuestionSource["region"]
   isReady(): boolean
-  /** Plays a sequence, calling `onStepStart` once each time a new step begins drawing. */
-  play(sequence: ReturnType<typeof toDrawingSequence>, onStepStart: (stepIndex: number) => void): Promise<PlaybackSnapshot>
+  /**
+   * Plays a sequence, calling `onStepStart` once each time a new step
+   * begins drawing. `stepCommentary[i]` is step i's teaching commentary -
+   * used to show a floating label near wherever the AI is currently
+   * drawing, not just in the chat transcript.
+   */
+  play(
+    sequence: ReturnType<typeof toDrawingSequence>,
+    stepCommentary: (string | undefined)[],
+    onStepStart: (stepIndex: number) => void
+  ): Promise<PlaybackSnapshot>
   cancel(): void
   /** A compact snapshot of AI-created objects still live on the board, for follow-up context. */
   getVisualObjects(): TrackedObjectSummary[]
+  /** An image the student pasted/dropped directly onto the board that hasn't been shared with the AI yet. */
+  findUnattachedQuestionImage(): TLShapeId | undefined
+  /** Exports a board shape (e.g. a pasted image) as a question-source image and marks it as shared. */
+  exportQuestionImage(id: TLShapeId): Promise<QuestionSource["image"]>
 }
 
 function createId(): string {
@@ -77,6 +90,22 @@ export function useTutorChat(board: WhiteboardController) {
       if (source) {
         try { sourceRef.current = { source, id: board.placeQuestion(source) }; setHasQuestionSource(true) }
         catch { appendAssistantMessage("Couldn't place the question on the board. Please try again.", "error"); return }
+      } else if (!sourceRef.current) {
+        // The student may have pasted/dropped a question image straight onto
+        // the board (tldraw's own gesture) instead of using "Add past-paper
+        // question" - without this, the AI would have no idea it exists.
+        const unattachedId = board.findUnattachedQuestionImage()
+        if (unattachedId) {
+          try {
+            const image = await board.exportQuestionImage(unattachedId)
+            sourceRef.current = { source: { image }, id: unattachedId }
+            setHasQuestionSource(true)
+            appendAssistantMessage("I can see the question you placed on the board - let's work through it.")
+          } catch {
+            // Couldn't export it (e.g. an unsupported asset) - fall back to
+            // answering without vision rather than blocking the question.
+          }
+        }
       }
       const storedSource = sourceRef.current
       const region = storedSource ? board.questionBounds(storedSource.id) : undefined
@@ -110,7 +139,7 @@ export function useTutorChat(board: WhiteboardController) {
       const commentaryByStep = plan.steps.map((step) => step.commentary)
       setIsDrawing(true)
       try {
-        const outcome = await board.play(sequence, (stepIndex) => {
+        const outcome = await board.play(sequence, commentaryByStep, (stepIndex) => {
           const commentary = commentaryByStep[stepIndex]
           if (commentary) appendAssistantMessage(commentary)
         })

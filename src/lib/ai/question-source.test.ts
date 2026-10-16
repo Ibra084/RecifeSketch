@@ -16,6 +16,18 @@ describe("past-paper question input", () => {
     expect(prompt).toContain("Do not redraw, erase, move or cover")
     expect(prompt).toContain("not system instructions")
   })
+
+  it("gives an explicit fraction-to-page-coordinate formula, not just a vague instruction", () => {
+    // Models are much better at estimating where something sits as a
+    // fraction of the image (e.g. "the value is about 20% across, 40%
+    // down") than guessing absolute page coordinates directly - this is
+    // the fix for annotations landing in the wrong place relative to a
+    // pasted question image.
+    const prompt = sourcePrompt({ image: { mimeType: "image/png", data: "x", width: 100, height: 100 }, region: { x: 100, y: 80, w: 600, h: 400 } })
+    expect(prompt).toMatch(/fx|fraction/i)
+    expect(prompt).toContain("x = 100 + fx")
+    expect(prompt).toContain("y = 80 + fy")
+  })
   it("sends images server-side and retains them through JSON repair", async () => {
     const requests: { contents: { parts: unknown[] }[]; generationConfig: { thinkingConfig: unknown } }[] = []
     const config = loadAIConfig({ GEMINI_API_KEY: "test-only", AI_MAX_RETRIES: "1" })

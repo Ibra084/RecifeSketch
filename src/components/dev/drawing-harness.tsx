@@ -1,6 +1,7 @@
 "use client"
 
-import { useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
+import { transformerFixture } from "./transformer-fixture"
 import { Tldraw, type Editor } from "tldraw"
 import "tldraw/tldraw.css"
 import { Button } from "@/components/ui/button"
@@ -23,6 +24,7 @@ import type { PlaybackSnapshot } from "@/lib/drawing/playback/types"
  */
 
 const PRESETS: Record<string, unknown> = {
+  "Transformer layout regression": transformerFixture(),
   "Rectangle + label": [
     {
       type: "create_shape",
@@ -95,6 +97,8 @@ const PRESETS: Record<string, unknown> = {
 const SPEED_OPTIONS = [0.5, 1, 2, 4] as const
 
 export function DrawingHarness() {
+  const adapterRef = useRef<TldrawDrawingAdapter | null>(null)
+  useEffect(() => () => adapterRef.current?.dispose(), [])
   const editorRef = useRef<Editor | null>(null)
   const engineRef = useRef<DrawingEngine | null>(null)
   const animatorRef = useRef<TldrawShapeAnimator | null>(null)
@@ -108,7 +112,9 @@ export function DrawingHarness() {
 
   function handleMount(editor: Editor) {
     editorRef.current = editor
-    engineRef.current = new DrawingEngine(new TldrawDrawingAdapter(editor))
+    adapterRef.current?.dispose()
+    adapterRef.current = new TldrawDrawingAdapter(editor)
+    engineRef.current = new DrawingEngine(adapterRef.current)
     animatorRef.current = new TldrawShapeAnimator(editor)
   }
 
@@ -161,7 +167,9 @@ export function DrawingHarness() {
     if (!editor) return
     playerRef.current?.cancel()
     editor.deleteShapes(Array.from(editor.getCurrentPageShapeIds()))
-    engineRef.current = new DrawingEngine(new TldrawDrawingAdapter(editor))
+    adapterRef.current?.dispose()
+    adapterRef.current = new TldrawDrawingAdapter(editor)
+    engineRef.current = new DrawingEngine(adapterRef.current)
     playerRef.current = null
     setResult(null)
     setSnapshot(null)

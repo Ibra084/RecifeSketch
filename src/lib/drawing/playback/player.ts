@@ -17,6 +17,7 @@
 
 import type { DrawingEngine } from "../engine"
 import type { DrawingAction } from "../protocol"
+import { curveToLine, repeatedCurveToLine } from "../curves"
 import type { AnimationContext, ShapeAnimator } from "./animator"
 import { NullShapeAnimator } from "./animator"
 import { wait } from "./scheduler"
@@ -119,7 +120,10 @@ export class DrawingPlayer {
     this.setState("drawing")
 
     for (let stepIndex = 0; stepIndex < sequence.length; stepIndex++) {
+      await this.waitWhilePaused()
+      if (this.cancelled) return this.setState("cancelled")
       this.stepIndex = stepIndex
+      if (stepIndex > 0) this.emit()
       const step = sequence[stepIndex]
 
       for (const action of step.actions) {
@@ -140,6 +144,7 @@ export class DrawingPlayer {
         await this.animate(action)
         this.actionIndex++
         this.emit()
+        if (this.cancelled) return this.setState("cancelled")
       }
 
       const isLastStep = stepIndex === sequence.length - 1
@@ -172,6 +177,10 @@ export class DrawingPlayer {
     }
 
     switch (action.type) {
+      case "draw_repeated_curve":
+        return this.animator.revealLine(repeatedCurveToLine(action), ctx)
+      case "draw_curve":
+        return this.animator.revealLine(curveToLine(action), ctx)
       case "create_freehand_path":
         return this.animator.revealFreehand(action, ctx)
       case "create_polygon":

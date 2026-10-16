@@ -77,6 +77,14 @@ describe("buildTeachingPrompt", () => {
 })
 
 describe("buildRepairPrompt", () => {
+  it("retains the protocol and existing board ids when repairing", () => {
+    const prompt = buildRepairPrompt({ question: "Move the resistor", invalidResponse: "bad", errorMessage: "invalid JSON",
+      context: { objects: [{ id: "existing-resistor", kind: "shape", x: 0, y: 0, w: 100, h: 40 }], history: [] } })
+    expect(prompt).toContain("existing-resistor")
+    expect(prompt).toContain("move_object")
+    expect(prompt).toContain("complete conducting loop")
+    expect(prompt).not.toContain("earlier in THIS plan")
+  })
   it("includes the original question, the invalid output and the validation error", () => {
     const prompt = buildRepairPrompt({
       question: "What is Newton's second law?",

@@ -37,6 +37,7 @@ import { mapPointsToCanvas, sampleFunction } from "../plotting"
 import { buildDrawSegments, buildLinePointsRecord, type PlainPoint } from "../tldraw-shape-builders"
 import type { AnimationContext, ShapeAnimator } from "./animator"
 import { runSteppedAnimation } from "./scheduler"
+import { revealPath } from "./path-reveal"
 import { REALTIME_CLOCK, type PlaybackClock } from "./types"
 
 const MAX_REVEAL_STEPS = 24
@@ -121,8 +122,7 @@ export class TldrawShapeAnimator implements ShapeAnimator {
     points: readonly PlainPoint[],
     ctx: AnimationContext
   ): Promise<void> {
-    const total = points.length
-    const steps = stepsFor(total)
+    const steps = MAX_REVEAL_STEPS
 
     await runSteppedAnimation({
       steps,
@@ -130,11 +130,10 @@ export class TldrawShapeAnimator implements ShapeAnimator {
       signal: ctx.signal,
       clock: this.clock,
       onFrame: (frameIndex, isFinal) => {
-        const count = subsetCount(total, frameIndex, steps, isFinal)
         this.editor.updateShape({
           id: tlId,
           type: "line",
-          props: { points: buildLinePointsRecord(points.slice(0, count)) },
+          props: { points: buildLinePointsRecord(revealPath(points, isFinal ? 1 : (frameIndex + 1) / steps)) },
         })
       },
     })

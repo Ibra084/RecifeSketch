@@ -46,6 +46,20 @@ function openDeps(provider = new FakeAIProvider({
 }
 
 describe("handleTutorRequest", () => {
+  it("passes a past-paper source and its page coordinates to the provider", async () => {
+    const provider = new FakeAIProvider({ ok: true, plan: samplePlan(), usage: { approxInputTokens: 1, approxOutputTokens: 1, estimatedCostUsd: 0, measured: false } })
+    const source = { text: "A resistor has V=10 V and R=5 Ω. Find its current.", region: { x: 80, y: 80, w: 600, h: 120 } }
+    const response = await handleTutorRequest(makeRequest({ question: "Give me a hint", source }), openDeps(provider))
+    expect(response.status).toBe(200)
+    expect(provider.requests[0].source).toEqual(source)
+  })
+
+  it("rejects an unsupported attachment before calling the model", async () => {
+    const provider = new FakeAIProvider({ ok: true, plan: samplePlan(), usage: { approxInputTokens: 1, approxOutputTokens: 1, estimatedCostUsd: 0, measured: false } })
+    const response = await handleTutorRequest(makeRequest({ question: "Annotate", source: { image: { mimeType: "text/html", data: "a".repeat(32), width: 100, height: 100 } } }), openDeps(provider))
+    expect(response.status).toBe(400)
+    expect(provider.requests).toHaveLength(0)
+  })
   it("returns the teaching plan on success, with ids unchanged when there's no prior context", async () => {
     const response = await handleTutorRequest(makeRequest({ question: "How do circuits work?" }), openDeps())
     expect(response.status).toBe(200)

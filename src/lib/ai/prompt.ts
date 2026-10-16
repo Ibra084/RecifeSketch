@@ -27,9 +27,12 @@ const ACTION_TYPES = [
   "create_polygon",
   "draw_line",
   "draw_arrow",
+  "draw_curve",
+  "draw_repeated_curve",
   "write_text",
   "write_equation",
   "plot_function",
+  "update_plot",
   "move_object",
   "update_object",
   "delete_object",
@@ -48,7 +51,22 @@ Available action types (every action is one JSON object with a "type" field):
 - create_polygon { id, points: [{x,y}, ...] (>=3), color?, fill?, dash?, size? }
     for an arbitrary straight-sided shape with no matching "shape" kind.
 - draw_line { id, points: [{x,y}, ...], color?, dash?, size? }
+- draw_curve { id, start:{x,y}, segments:[{c1:{x,y},c2:{x,y},end:{x,y}}, ...], color?, dash?, size? }
+    A smooth path of 1-30 cubic Bezier segments. Each segment starts at the
+    preceding endpoint; c1/c2 are tangent control points, NOT points to
+    connect with straight lines. Use for curved outlines, loops, windings,
+    springs and other repeated curved forms. Several short curved segments
+    describe these forms far better than a sparse polygon or zigzag.
 - draw_arrow { id, start: {x,y}, end: {x,y}, color?, dash?, size?, arrowheadStart?, arrowheadEnd?, label?, bend? }
+- draw_repeated_curve { id, start:{x,y}, end:{x,y}, amplitude, cycles, profile:"wave"|"loops", color?, size? }
+    Repeated geometric curves along the axis from start to end. amplitude
+    is the perpendicular half-width (2-500); cycles is the number of turns
+    (2-20). Use profile:"loops" for windings/springs and profile:"wave" for
+    conceptual waves (NOT precise graphs). Vertical windings have equal
+    start.x and end.x; amplitude spans across the core limb they wrap.
+    Prefer this to guessing the coordinates of individual turns.
+    Shape and arrow labels are laid out as readable external text by the
+    renderer. Supply label rather than an overlapping duplicate write_text.
 - write_text { id, position: {x,y}, text, color?, size?, w? }
 - write_equation { id, position: {x,y}, expression, color?, size? }
     expression is rendered as plain text with NO markup engine behind it.
@@ -63,7 +81,13 @@ Available action types (every action is one JSON object with a "type" field):
     compare them), set showAxes:false on every one after the first -
     otherwise each one redraws its own full set of axis lines and tick
     labels on top of the others.
-- move_object { id, position: {x,y} } - moves an object created earlier in THIS plan.
+- move_object { id, position: {x,y} } - sets the page-space top-left of an existing object's visual bounds; reuse ids from earlier turns.
+- update_plot { id, expression, domain?:[min,max], scale?:{x,y}, showAxes? }
+    Change an existing graph's formula in place, retaining its id and current
+    origin. Use this for "change the parabola" or "shift the graph", rather
+    than drawing a duplicate. For a comparison, add a new plot_function on
+    the same origin/scale with showAxes:false. Annotate vertices, roots or
+    symmetry with separate editable text/arrows, computed from the formula.
 - update_object { id, patch: { color?, fill?, dash?, size?, text?, w?, h?, opacity? } }
 - delete_object { id }
 - highlight_object { id, color?, visible? }
@@ -109,6 +133,18 @@ Rules:
   whiteboard only understands these editable drawing primitives.
 - Never pick a diagram from a fixed library of lessons. Decide what to draw
   from the question itself, as if sketching it for the first time.
+- First plan the anatomy: identify each part, its shape, and how it connects
+  to the other parts. A word beside an arbitrary box or polygon does not
+  make that geometry a scientifically meaningful depiction. Use draw_repeated_curve
+  with profile:"loops" for windings: a coil needs several visible turns, not
+  two slanted lines. Show a transformer core as a closed magnetic path with
+  a central window and coils around separate limbs. Do not imply that the
+  two windings are electrically connected. Keep input/output annotations
+  outside the core, and show changing flux along the core rather than an
+  unrelated oval in the window. This is a schematic, not a field simulation.
+- Reserve distinct areas for the title, diagram and equation/explanation.
+  Place headings above the objects they describe. Keep a clear margin
+  around arrows and avoid long labels embedded in short arrow shafts.
 - QUANTITATIVE PRECISION: plot_function is the only way to draw a graph that
   claims to be mathematically accurate - it renders its own correctly-scaled
   axes, tick marks and numeric labels automatically. Never hand-draw axes,
@@ -122,6 +158,19 @@ Rules:
 - Plan layout so shapes, labels and arrows don't overlap: space objects out,
   and place each label close to (just below or beside) the exact object it
   names, not floating in open space elsewhere.
+- Keep component symbols separate from their names. For a narrow symbol,
+  omit its internal label and use write_text beside it, with no w for a
+  short name so it stays on one line. Never put "Battery" inside a thin
+  vertical rectangle. Reserve generous label space before placing wires.
+- Before output, trace every intended connection from endpoint to endpoint.
+  A functioning DC circuit needs a complete conducting loop through both
+  source terminals and the load. Draw recognizable source plates with
+  polarity, and a resistor symbol with two terminals. Show conventional
+  current from positive to negative around the external circuit only when
+  the path is closed. An open-circuit example must explicitly say current
+  does not flow. Put current arrows alongside a specific wire segment;
+  they are annotations, not substitutes for missing wires. Voltage is a
+  difference between two points. Check that commentary matches the diagram.
 - Keep each step's actions closely related (e.g. a shape and the label that
   names it belong in the same step) so they read as one idea appearing at once.
 - Order steps logically: establish the basic picture first, then build each
@@ -155,12 +204,15 @@ export function buildTeachingPrompt(question: string, context?: TutorContext): s
 
 export interface RepairPromptInput {
   question: string
+  context?: TutorContext
   invalidResponse: string
   errorMessage: string
 }
 
-export function buildRepairPrompt({ question, invalidResponse, errorMessage }: RepairPromptInput): string {
+export function buildRepairPrompt({ question, context, invalidResponse, errorMessage }: RepairPromptInput): string {
   return [
+    buildTeachingPrompt(question, context),
+    "",
     `You previously answered the question "${question}" but your response was invalid.`,
     "",
     "Your previous response:",

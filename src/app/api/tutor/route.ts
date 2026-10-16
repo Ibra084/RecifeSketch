@@ -7,6 +7,7 @@ import { MAX_QUESTION_LENGTH, runTeachingPipeline, type TeachingPipelineFailure 
 import type { AIProvider } from "@/lib/ai/provider"
 import { createRateLimiter, type RateLimiter } from "@/lib/ai/rate-limiter"
 import { resolveTeachingPlanIds } from "@/lib/ai/teaching-protocol"
+import { questionSourceSchema } from "@/lib/ai/question-source"
 
 /**
  * POST /api/tutor
@@ -20,11 +21,12 @@ import { resolveTeachingPlanIds } from "@/lib/ai/teaching-protocol"
 // A raw request body bigger than this is rejected before it is even
 // JSON-parsed, independent of the (much smaller) question-length cap the
 // pipeline enforces afterwards.
-const MAX_BODY_BYTES = 10_000
+const MAX_BODY_BYTES = 2_800_000
 
 const requestSchema = z.strictObject({
   question: z.string(),
   context: tutorContextSchema.optional(),
+  source: questionSourceSchema.optional(),
 })
 
 const config = loadAIConfig()
@@ -98,6 +100,7 @@ export async function handleTutorRequest(request: Request, deps: TutorRouteDeps)
   const context = parsedBody.data.context
   const result = await runTeachingPipeline({
     question: parsedBody.data.question,
+    source: parsedBody.data.source,
     context,
     clientKey: clientKeyFrom(request),
     provider: deps.provider,

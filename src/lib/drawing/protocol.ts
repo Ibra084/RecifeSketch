@@ -183,6 +183,16 @@ export const drawArrowActionSchema = z.strictObject({
   bend: z.number().finite().min(-1).max(1).optional(),
 })
 
+export const drawCurveActionSchema = z.strictObject({
+  type: z.literal("draw_curve"),
+  id: objectIdSchema,
+  start: pointSchema,
+  segments: z.array(z.strictObject({ c1: pointSchema, c2: pointSchema, end: pointSchema })).min(1).max(30),
+  color: colorSchema.optional(),
+  dash: dashStyleSchema.optional(),
+  size: sizeStyleSchema.optional(),
+})
+
 export const writeTextActionSchema = z.strictObject({
   type: z.literal("write_text"),
   id: objectIdSchema,
@@ -192,6 +202,16 @@ export const writeTextActionSchema = z.strictObject({
   size: sizeStyleSchema.optional(),
   w: dimensionSchema.optional(),
 })
+
+export const drawRepeatedCurveActionSchema = z.strictObject({
+  type: z.literal("draw_repeated_curve"), id: objectIdSchema,
+  start: pointSchema, end: pointSchema,
+  amplitude: z.number().finite().min(2).max(500),
+  cycles: z.number().int().min(2).max(20),
+  profile: z.enum(["wave", "loops"]),
+  color: colorSchema.optional(), size: sizeStyleSchema.optional(),
+}).refine(action => Math.hypot(action.end.x - action.start.x, action.end.y - action.start.y) >= 20,
+  "Repeated curves need a span of at least 20 page units")
 
 export const writeEquationActionSchema = z.strictObject({
   type: z.literal("write_equation"),
@@ -228,6 +248,14 @@ export const moveObjectActionSchema = z.strictObject({
   type: z.literal("move_object"),
   id: objectIdSchema,
   position: pointSchema,
+})
+
+export const updatePlotActionSchema = z.strictObject({
+  type: z.literal("update_plot"), id: objectIdSchema,
+  expression: z.string().min(1).max(200),
+  domain: plotFunctionActionSchema.shape.domain.optional(),
+  scale: plotFunctionActionSchema.shape.scale,
+  showAxes: z.boolean().optional(),
 })
 
 export const updateObjectPatchSchema = z.strictObject({
@@ -286,9 +314,12 @@ export const drawingActionSchema = z.discriminatedUnion("type", [
   createPolygonActionSchema,
   drawLineActionSchema,
   drawArrowActionSchema,
+  drawCurveActionSchema,
+  drawRepeatedCurveActionSchema,
   writeTextActionSchema,
   writeEquationActionSchema,
   plotFunctionActionSchema,
+  updatePlotActionSchema,
   moveObjectActionSchema,
   updateObjectActionSchema,
   deleteObjectActionSchema,
@@ -305,9 +336,12 @@ export type CreateFreehandPathAction = z.infer<typeof createFreehandPathActionSc
 export type CreatePolygonAction = z.infer<typeof createPolygonActionSchema>
 export type DrawLineAction = z.infer<typeof drawLineActionSchema>
 export type DrawArrowAction = z.infer<typeof drawArrowActionSchema>
+export type DrawCurveAction = z.infer<typeof drawCurveActionSchema>
+export type DrawRepeatedCurveAction = z.infer<typeof drawRepeatedCurveActionSchema>
 export type WriteTextAction = z.infer<typeof writeTextActionSchema>
 export type WriteEquationAction = z.infer<typeof writeEquationActionSchema>
 export type PlotFunctionAction = z.infer<typeof plotFunctionActionSchema>
+export type UpdatePlotAction = z.infer<typeof updatePlotActionSchema>
 export type MoveObjectAction = z.infer<typeof moveObjectActionSchema>
 export type UpdateObjectAction = z.infer<typeof updateObjectActionSchema>
 export type UpdateObjectPatch = z.infer<typeof updateObjectPatchSchema>
@@ -329,6 +363,8 @@ export const CREATING_ACTION_TYPES = [
   "create_polygon",
   "draw_line",
   "draw_arrow",
+  "draw_curve",
+  "draw_repeated_curve",
   "write_text",
   "write_equation",
   "plot_function",
@@ -336,6 +372,7 @@ export const CREATING_ACTION_TYPES = [
 
 /** The actions that reference a previously-created object by `id`. */
 export const REFERENCING_ACTION_TYPES = [
+  "update_plot",
   "move_object",
   "update_object",
   "delete_object",

@@ -1,7 +1,7 @@
 "use client"
 
 import dynamic from "next/dynamic"
-import { useCallback, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import type { Editor } from "tldraw"
 import { MessageSquare, PanelRightClose, PanelRightOpen } from "lucide-react"
 import { RecifeWordmark } from "@/components/brand/recife-wordmark"
@@ -13,6 +13,7 @@ import { TldrawDrawingAdapter } from "@/lib/drawing/tldraw-adapter"
 import { DrawingPlayer } from "@/lib/drawing/playback/player"
 import { TldrawShapeAnimator } from "@/lib/drawing/playback/tldraw-animator"
 import { cn, prefersReducedMotion } from "@/lib/utils"
+import { placeQuestionSheet } from "@/lib/drawing/question-sheet"
 
 // tldraw touches browser-only APIs (IndexedDB, window) during setup, so it
 // must never render on the server.
@@ -37,16 +38,20 @@ export function AppShell() {
   // addressable and the board keeps persisting across turns - a fresh
   // DrawingPlayer is created per `play()` call, same as the dev harness.
   const engineRef = useRef<DrawingEngine | null>(null)
+  const editorRef = useRef<Editor | null>(null)
   const adapterRef = useRef<TldrawDrawingAdapter | null>(null)
   const animatorRef = useRef<TldrawShapeAnimator | null>(null)
   const playerRef = useRef<DrawingPlayer | null>(null)
 
   const handleEditorMount = useCallback((editor: Editor) => {
+    editorRef.current = editor
+    adapterRef.current?.dispose()
     const adapter = new TldrawDrawingAdapter(editor)
     adapterRef.current = adapter
     engineRef.current = new DrawingEngine(adapter)
     animatorRef.current = new TldrawShapeAnimator(editor)
   }, [])
+  useEffect(() => () => adapterRef.current?.dispose(), [])
 
   const [boardController] = useState<WhiteboardController>(() => ({
     isReady: () => engineRef.current !== null && animatorRef.current !== null,
@@ -76,6 +81,7 @@ export function AppShell() {
 
       try {
         await player.play(sequence)
+        return player.getSnapshot()
       } finally {
         unsubscribe()
         playerRef.current = null
@@ -83,6 +89,14 @@ export function AppShell() {
     },
     cancel: () => playerRef.current?.cancel(),
     getVisualObjects: () => adapterRef.current?.summarizeObjects() ?? [],
+    placeQuestion: (source) => {
+      if (!editorRef.current) throw new Error("Whiteboard not ready")
+      return placeQuestionSheet(editorRef.current, source)
+    },
+    questionBounds: (id) => {
+      const box = editorRef.current?.getShapePageBounds(id)
+      return box ? { x: box.x, y: box.y, w: box.w, h: box.h } : undefined
+    },
   }))
 
   const chat = useTutorChat(boardController)

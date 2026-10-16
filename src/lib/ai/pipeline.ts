@@ -3,6 +3,7 @@ import type { AIProvider, TeachingPlanFailure } from "./provider"
 import type { RateLimiter } from "./rate-limiter"
 import type { TeachingPlan } from "./teaching-protocol"
 import type { UsageEstimate } from "./usage-tracker"
+import type { QuestionSource } from "./question-source"
 
 /**
  * Orchestrates one tutor request: validates the question, enforces the
@@ -21,6 +22,7 @@ export type TeachingPipelineResult =
 
 export interface RunTeachingPipelineInput {
   question: string
+  source?: QuestionSource
   context?: TutorContext
   clientKey: string
   provider: AIProvider
@@ -56,7 +58,7 @@ export async function runTeachingPipeline(
   }
 
   const result = await input.provider.generateTeachingPlan(
-    { question, context: input.context },
+    { question, context: input.context, source: input.source },
     input.signal
   )
   if (!result.ok) return { ok: false, failure: result.failure }

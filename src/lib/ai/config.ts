@@ -13,6 +13,7 @@ export interface AIConfig {
   gemini: {
     apiKey: string | null
     model: string
+    thinkingLevel?: "minimal" | "low" | "high"
   }
   maxOutputTokens: number
   maxRetries: number
@@ -26,9 +27,9 @@ export interface AIConfig {
 const DEFAULTS = {
   provider: "gemini" as const,
   geminiModel: "gemini-3.1-flash-lite",
-  maxOutputTokens: 4096,
+  maxOutputTokens: 8192,
   maxRetries: 1,
-  requestTimeoutMs: 20_000,
+  requestTimeoutMs: 45_000,
   rateLimitCapacity: 8,
   rateLimitRefillPerSec: 0.1,
 }
@@ -67,6 +68,7 @@ export function loadAIConfig(env: Record<string, string | undefined> = process.e
     gemini: {
       apiKey: nonEmpty(env.GEMINI_API_KEY),
       model: nonEmpty(env.GEMINI_MODEL) ?? DEFAULTS.geminiModel,
+      thinkingLevel: env.GEMINI_THINKING_LEVEL === "high" ? "high" : env.GEMINI_THINKING_LEVEL === "minimal" ? "minimal" : "low",
     },
     maxOutputTokens: parsePositiveInt(env.AI_MAX_OUTPUT_TOKENS, DEFAULTS.maxOutputTokens),
     maxRetries: parseNonNegativeInt(env.AI_MAX_RETRIES, DEFAULTS.maxRetries),

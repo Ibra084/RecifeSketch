@@ -75,6 +75,32 @@ function createFakeClock() {
 }
 
 describe("DrawingPlayer", () => {
+  it("announces each step before that step's first action executes", async () => {
+    const adapter = new FakeDrawingAdapter()
+    const player = new DrawingPlayer({ engine: new DrawingEngine(adapter), baseStepPauseMs: 0 })
+    const announced: { step: number; calls: number }[] = []
+    let last = -1
+    player.subscribe((snapshot) => {
+      if (snapshot.state === "drawing" && snapshot.stepIndex !== last) {
+        last = snapshot.stepIndex
+        announced.push({ step: last, calls: adapter.calls.length })
+      }
+    })
+    await player.play([{ actions: [shapeAction("a")] }, { actions: [shapeAction("b")] }])
+    expect(announced).toEqual([{ step: 0, calls: 0 }, { step: 1, calls: 1 }])
+  })
+
+  it("reports cancellation during the last action instead of completed", async () => {
+    const adapter = new FakeDrawingAdapter()
+    const player = new DrawingPlayer({ engine: new DrawingEngine(adapter) })
+    player.subscribe((snapshot) => {
+      if (snapshot.state === "drawing" && snapshot.actionIndex === 1) player.cancel()
+    })
+    await player.play([{ actions: [shapeAction("a")] }])
+    expect(player.getSnapshot().state).toBe("cancelled")
+    expect(adapter.getObjectBounds("a")).toBeDefined()
+  })
+
   it("starts idle", () => {
     const player = new DrawingPlayer({ engine: new DrawingEngine(new FakeDrawingAdapter()) })
     expect(player.getSnapshot().state).toBe("idle")

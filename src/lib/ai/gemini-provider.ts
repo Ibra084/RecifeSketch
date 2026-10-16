@@ -4,6 +4,7 @@ import type { AIProvider, TeachingPlanFailure, TeachingPlanRequest, TeachingPlan
 import { isTransientFailure, MAX_TRANSIENT_RETRIES, TRANSIENT_RETRY_DELAY_MS } from "./retry"
 import { parseTeachingPlanResponse } from "./response-parser"
 import { estimateUsage, usageFromMeasuredTokens, type UsageEstimate } from "./usage-tracker"
+import { sourcePrompt, type QuestionSource } from "./question-source"
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -30,6 +31,7 @@ interface GeminiCandidate {
 interface GeminiUsageMetadata {
   promptTokenCount?: number
   candidatesTokenCount?: number
+  thoughtsTokenCount?: number
 }
 
 interface GeminiGenerateContentResponse {
@@ -47,7 +49,7 @@ function extractText(response: GeminiGenerateContentResponse): string | null {
 function usageFrom(response: GeminiGenerateContentResponse, prompt: string, text: string): UsageEstimate {
   const { promptTokenCount, candidatesTokenCount } = response.usageMetadata ?? {}
   if (promptTokenCount !== undefined && candidatesTokenCount !== undefined) {
-    return usageFromMeasuredTokens(promptTokenCount, candidatesTokenCount)
+    return usageFromMeasuredTokens(promptTokenCount, candidatesTokenCount + (response.usageMetadata?.thoughtsTokenCount ?? 0))
   }
   return estimateUsage({ promptChars: prompt.length, responseChars: text.length })
 }
@@ -73,7 +75,7 @@ export class GeminiProvider implements AIProvider {
     if (!apiKey) return { ok: false, failure: { kind: "missing_api_key" } }
 
     const { question, context } = request
-    let prompt = buildTeachingPrompt(question, context)
+    let prompt = buildTeachingPrompt(question, context) + "\n\n" + sourcePrompt(request.source)
 
     for (let attempt = 0; attempt <= config.maxRetries; attempt++) {
       const callResult = await this.callGeminiWithTransientRetry({
@@ -83,6 +85,7 @@ export class GeminiProvider implements AIProvider {
         maxOutputTokens: config.maxOutputTokens,
         timeoutMs: config.requestTimeoutMs,
         signal,
+        image: request.source?.image,
       })
       if (!callResult.ok) return callResult
 
@@ -96,9 +99,10 @@ export class GeminiProvider implements AIProvider {
       }
       prompt = buildRepairPrompt({
         question,
+        context,
         invalidResponse: callResult.text,
         errorMessage: parsed.error.message,
-      })
+      }) + "\n\n" + sourcePrompt(request.source)
     }
 
     return { ok: false, failure: { kind: "invalid_output", detail: "exhausted retries" } }
@@ -133,6 +137,7 @@ export class GeminiProvider implements AIProvider {
     maxOutputTokens: number
     timeoutMs: number
     signal?: AbortSignal
+    image?: QuestionSource["image"]
   }): Promise<GeminiCallResult> {
     const fetchImpl = this.options.fetchImpl ?? fetch
     const controller = new AbortController()
@@ -146,19 +151,19 @@ export class GeminiProvider implements AIProvider {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          contents: [{ role: "user", parts: [{ text: args.prompt }] }],
+          contents: [{ role: "user", parts: [
+            { text: args.prompt },
+            ...(args.image ? [{ inlineData: { mimeType: args.image.mimeType, data: args.image.data } }] : []),
+          ] }],
           generationConfig: {
             maxOutputTokens: args.maxOutputTokens,
             temperature: 0.4,
             responseMimeType: "application/json",
-            // Disabled: on thinking-capable models, "thinking" tokens are
-            // drawn from the same maxOutputTokens budget as the visible
-            // reply, so leaving it on risks the model spending the whole
-            // budget reasoning and returning no text at all - and burning
-            // cost on invisible output conflicts with this project's own
-            // cost-minimization requirement. This task doesn't need deep
-            // multi-step reasoning, just a competent drawing plan.
-            thinkingConfig: { thinkingBudget: 0 },
+            // Gemini 3 uses thinkingLevel. Other configured model families
+            // retain their provider defaults rather than receiving an invalid budget.
+            ...(/^gemini-3[.-]/.test(args.model) ? {
+              thinkingConfig: { thinkingLevel: this.options.config.gemini.thinkingLevel ?? "low" },
+            } : {}),
           },
         }),
         signal: controller.signal,

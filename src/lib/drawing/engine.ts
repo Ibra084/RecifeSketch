@@ -23,6 +23,7 @@
 
 import type { DrawingAdapter } from "./adapter"
 import { drawingProgramSchema, type DrawingAction } from "./protocol"
+import { curveToLine, repeatedCurveToLine } from "./curves"
 
 export interface ExecutedAction {
   index: number
@@ -56,6 +57,8 @@ const CREATING_TYPES = new Set<DrawingAction["type"]>([
   "create_polygon",
   "draw_line",
   "draw_arrow",
+  "draw_curve",
+  "draw_repeated_curve",
   "write_text",
   "write_equation",
   "plot_function",
@@ -101,6 +104,15 @@ export class DrawingEngine {
     }
 
     switch (action.type) {
+      case "update_plot":
+        this.adapter.updatePlot(action)
+        return
+      case "draw_repeated_curve":
+        this.adapter.drawLine(repeatedCurveToLine(action))
+        return
+      case "draw_curve":
+        this.adapter.drawLine(curveToLine(action))
+        return
       case "create_shape":
         this.adapter.createShape(action)
         return

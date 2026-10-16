@@ -18,6 +18,7 @@ import type {
   PlotFunctionAction,
   Region,
   UpdateObjectPatch,
+  UpdatePlotAction,
   WriteEquationAction,
   WriteTextAction,
 } from "./protocol"
@@ -43,6 +44,7 @@ export interface DrawingAdapter {
   writeText(action: WriteTextAction): void
   writeEquation(action: WriteEquationAction): void
   plotFunction(action: PlotFunctionAction): void
+  updatePlot(action: UpdatePlotAction): void
 
   moveObject(id: string, position: { x: number; y: number }): void
   updateObject(id: string, patch: UpdateObjectPatch): void

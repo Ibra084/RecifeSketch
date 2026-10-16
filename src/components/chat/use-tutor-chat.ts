@@ -5,6 +5,10 @@ import { MAX_HISTORY_TURNS, type PriorTurn, type TutorContext } from "@/lib/ai/c
 import { toDrawingSequence, type TeachingPlan } from "@/lib/ai/teaching-protocol"
 import type { UsageEstimate } from "@/lib/ai/usage-tracker"
 import type { TrackedObjectSummary } from "@/lib/drawing/tldraw-adapter"
+import type { PlaybackSnapshot } from "@/lib/drawing/playback/types"
+import { playbackCommentary } from "@/lib/ai/playback-history"
+import type { QuestionSource } from "@/lib/ai/question-source"
+import type { TLShapeId } from "tldraw"
 
 export interface ChatMessage {
   id: string
@@ -26,9 +30,11 @@ interface TutorFailureResponse {
 type TutorResponse = TutorSuccessResponse | TutorFailureResponse
 
 export interface WhiteboardController {
+  placeQuestion(source: QuestionSource): TLShapeId
+  questionBounds(id: TLShapeId): QuestionSource["region"]
   isReady(): boolean
   /** Plays a sequence, calling `onStepStart` once each time a new step begins drawing. */
-  play(sequence: ReturnType<typeof toDrawingSequence>, onStepStart: (stepIndex: number) => void): Promise<void>
+  play(sequence: ReturnType<typeof toDrawingSequence>, onStepStart: (stepIndex: number) => void): Promise<PlaybackSnapshot>
   cancel(): void
   /** A compact snapshot of AI-created objects still live on the board, for follow-up context. */
   getVisualObjects(): TrackedObjectSummary[]
@@ -49,13 +55,15 @@ export function useTutorChat(board: WhiteboardController) {
   // A short rolling history of prior turns, kept client-side and sent back
   // compact on every request - never the full chat transcript.
   const historyRef = useRef<PriorTurn[]>([])
+  const sourceRef = useRef<{ source: QuestionSource; id: TLShapeId } | null>(null)
+  const [hasQuestionSource, setHasQuestionSource] = useState(false)
 
   const appendAssistantMessage = useCallback((content: string, variant?: "error") => {
     setMessages((prev) => [...prev, { id: createId(), role: "assistant", content, variant }])
   }, [])
 
   const sendMessage = useCallback(
-    async (content: string) => {
+    async (content: string, source?: QuestionSource) => {
       const trimmed = content.trim()
       if (!trimmed || isWaitingForPlan || isDrawing) return
 
@@ -66,6 +74,14 @@ export function useTutorChat(board: WhiteboardController) {
         return
       }
 
+      if (source) {
+        try { sourceRef.current = { source, id: board.placeQuestion(source) }; setHasQuestionSource(true) }
+        catch { appendAssistantMessage("Couldn't place the question on the board. Please try again.", "error"); return }
+      }
+      const storedSource = sourceRef.current
+      const region = storedSource ? board.questionBounds(storedSource.id) : undefined
+      const activeSource = storedSource && region ? { ...storedSource.source, region } : undefined
+
       const context: TutorContext = { objects: board.getVisualObjects(), history: historyRef.current }
 
       setIsWaitingForPlan(true)
@@ -74,7 +90,7 @@ export function useTutorChat(board: WhiteboardController) {
         const response = await fetch("/api/tutor", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ question: trimmed, context }),
+          body: JSON.stringify({ question: trimmed, context, source: activeSource }),
         })
         json = (await response.json()) as TutorResponse
       } catch {
@@ -92,18 +108,23 @@ export function useTutorChat(board: WhiteboardController) {
       const plan = json.plan
       const sequence = toDrawingSequence(plan)
       const commentaryByStep = plan.steps.map((step) => step.commentary)
-      const lastCommentary = commentaryByStep[commentaryByStep.length - 1]
-      historyRef.current = [
-        ...historyRef.current,
-        { question: trimmed, concept: plan.concept, lastCommentary },
-      ].slice(-MAX_HISTORY_TURNS)
-
       setIsDrawing(true)
       try {
-        await board.play(sequence, (stepIndex) => {
+        const outcome = await board.play(sequence, (stepIndex) => {
           const commentary = commentaryByStep[stepIndex]
           if (commentary) appendAssistantMessage(commentary)
         })
+        historyRef.current = [
+          ...historyRef.current,
+          { question: trimmed, concept: plan.concept, lastCommentary: playbackCommentary(plan, outcome) },
+        ].slice(-MAX_HISTORY_TURNS)
+        if (outcome.state === "error") {
+          appendAssistantMessage("I couldn't finish the drawing. Some objects may already be on the board; please ask me to correct or continue it.", "error")
+        } else if (outcome.state === "cancelled") {
+          appendAssistantMessage("Drawing stopped. The completed objects are still editable.")
+        }
+      } catch {
+        appendAssistantMessage("The drawing was interrupted unexpectedly. Please check the board before continuing.", "error")
       } finally {
         setIsDrawing(false)
       }
@@ -116,6 +137,8 @@ export function useTutorChat(board: WhiteboardController) {
   }, [board])
 
   return {
+    hasQuestionSource,
+    clearQuestionSource: () => { sourceRef.current = null; setHasQuestionSource(false) },
     messages,
     isThinking: isWaitingForPlan,
     isDrawing,

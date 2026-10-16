@@ -42,6 +42,11 @@ yarn-error.log*
 # vercel
 .vercel
 
+# scratch/review artifacts - manual test images, ad-hoc smoke-test output,
+# not fixtures any source file depends on
+/work
+/image.png
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

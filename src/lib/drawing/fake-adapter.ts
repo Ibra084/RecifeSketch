@@ -16,11 +16,13 @@ import type {
   FocusCameraAction,
   PlotFunctionAction,
   UpdateObjectPatch,
+  UpdatePlotAction,
   WriteEquationAction,
   WriteTextAction,
 } from "./protocol"
 
 export type FakeAdapterCall =
+  | { method: "updatePlot"; action: UpdatePlotAction }
   | { method: "createShape"; action: CreateShapeAction }
   | { method: "createFreehandPath"; action: CreateFreehandPathAction }
   | { method: "createPolygon"; action: CreatePolygonAction }
@@ -45,6 +47,7 @@ function boundsOfPoints(points: readonly { x: number; y: number }[]): ObjectBoun
 }
 
 export class FakeDrawingAdapter implements DrawingAdapter {
+  updatePlot(action: UpdatePlotAction): void { this.record({ method: "updatePlot", action }) }
   readonly calls: FakeAdapterCall[] = []
   private readonly bounds = new Map<string, ObjectBounds>()
   /** Ids that `clearRegion` should report as deleted on its next call. */

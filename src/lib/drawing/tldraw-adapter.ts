@@ -16,12 +16,13 @@
  * All three remain ordinary, selectable, editable tldraw shapes afterwards.
  */
 
-import { createShapeId, toRichText, type Editor, type TLArrowShape, type TLShapeId } from "tldraw"
+import { createShapeId, getFontFamily, renderPlaintextFromRichText, toRichText, type Editor, type TLArrowShape, type TLShapeId } from "tldraw"
 import type { DrawingAdapter, HighlightOptions, ObjectBounds } from "./adapter"
 import { findContainingId } from "./geometry"
 import { sanitizeMathNotation } from "./math-notation"
 import { computeNiceTicks, mapPointsToCanvas, sampleFunction } from "./plotting"
 import { buildDrawSegments, buildLinePointsRecord } from "./tldraw-shape-builders"
+import { AttachedLabels } from "./attached-labels"
 import type {
   ClearRegionAction,
   CreateFreehandPathAction,
@@ -33,9 +34,11 @@ import type {
   FocusCameraAction,
   PlotFunctionAction,
   UpdateObjectPatch,
+  UpdatePlotAction,
   WriteEquationAction,
   WriteTextAction,
 } from "./protocol"
+import { plotFunctionActionSchema } from "./protocol"
 
 type TrackedKind = "geo" | "draw" | "line" | "arrow" | "text"
 
@@ -83,7 +86,33 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
   /** Scaffolding shapes (axis lines, tick marks, tick labels) that belong to a plot_function id but aren't independently addressable. */
   private readonly plotAuxiliaries = new Map<string, TLShapeId[]>()
 
-  constructor(private readonly editor: Editor) {}
+  private readonly labels: AttachedLabels
+  private readonly stopTracking: () => void
+
+  constructor(private readonly editor: Editor) {
+    this.labels = new AttachedLabels(editor)
+    this.restoreTracked()
+    this.stopTracking = editor.sideEffects.registerAfterCreateHandler("shape", shape => {
+      const entry = [...this.objects.entries()].find(([, tracked]) => tracked.tlId === shape.id)
+      if (entry) editor.updateShape({ id: shape.id, type: shape.type, meta: {
+        ...shape.meta, recifeObjectId: entry[0], recifeKind: entry[1].summaryKind,
+      } })
+    })
+  }
+
+  dispose(): void { this.labels.dispose(); this.stopTracking() }
+
+  private restoreTracked(): void {
+    const kinds: SummaryKind[] = ["shape", "freehand", "polygon", "line", "arrow", "text", "equation", "plot"]
+    for (const shape of this.editor.getCurrentPageShapes()) {
+      const id = shape.meta.recifeObjectId
+      const kind = shape.meta.recifeKind as SummaryKind
+      if (typeof id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(id) && kinds.includes(kind) &&
+        ["geo", "draw", "line", "arrow", "text"].includes(shape.type)) {
+        this.objects.set(id, { tlId: shape.id, kind: shape.type as TrackedKind, summaryKind: kind })
+      }
+    }
+  }
 
   private track(id: string, kind: TrackedKind, summaryKind: SummaryKind, label?: string): TLShapeId {
     const tlId = createShapeId(id)
@@ -107,10 +136,11 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
           fill: action.fill ?? "none",
           dash: action.dash ?? "draw",
           size: action.size ?? "m",
-          richText: toRichText(action.label ?? ""),
+          richText: toRichText(""),
         },
       },
     ])
+    if (action.label) this.labels.set(tlId, action.label, action.color)
   }
 
   createFreehandPath(action: CreateFreehandPathAction): void {
@@ -193,14 +223,16 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
           arrowheadStart: action.arrowheadStart ?? "none",
           arrowheadEnd: action.arrowheadEnd ?? "arrow",
           bend: action.bend ?? 0,
-          richText: toRichText(action.label ?? ""),
+          richText: toRichText(""),
         },
       },
     ])
+    if (action.label) this.labels.set(tlId, action.label, action.color)
   }
 
   writeText(action: WriteTextAction): void {
     const tlId = this.track(action.id, "text", "text", action.text)
+    const width = action.w === undefined ? 300 : this.readableTextWidth(action.text, action.size ?? "m", action.w)
     this.editor.createShapes([
       {
         id: tlId,
@@ -211,7 +243,8 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
           richText: toRichText(action.text),
           color: action.color ?? "black",
           size: action.size ?? "m",
-          w: action.w ?? 300,
+          font: "sans",
+          w: width,
           autoSize: action.w === undefined,
         },
       },
@@ -351,7 +384,29 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
 
     shapes.push(this.buildLineShape(tlId, curvePoints, action.color ?? "blue", action.size))
     this.editor.createShapes(shapes)
+    this.editor.updateShape({ id: tlId, type: "line", meta: {
+      ...this.editor.getShape(tlId)?.meta,
+      recifePlot: JSON.parse(JSON.stringify(action)),
+      recifePlotAuxiliaries: auxiliaryIds,
+    } })
     this.plotAuxiliaries.set(action.id, auxiliaryIds)
+  }
+
+  updatePlot(action: UpdatePlotAction): void {
+    const tracked = this.requireTracked(action.id)
+    const shape = this.editor.getShape(tracked.tlId)
+    const parsed = plotFunctionActionSchema.safeParse(shape?.meta.recifePlot)
+    if (!shape || !parsed.success) throw new Error("This object has no editable plot formula. Ask for a new graph.")
+    if (shape.rotation !== 0 || this.editor.getShapeParentTransform(shape).rotation() !== 0) {
+      throw new Error("Please unrotate the graph before changing its formula.")
+    }
+    const origin = this.editor.getShapePageTransform(shape).applyToPoint(parsed.data.position ?? { x: 0, y: 0 })
+    const next: PlotFunctionAction = { ...parsed.data, expression: action.expression,
+      domain: action.domain ?? parsed.data.domain, scale: action.scale ?? parsed.data.scale,
+      showAxes: action.showAxes ?? parsed.data.showAxes, position: { x: origin.x, y: origin.y } }
+    // Validate the new mathematical expression before removing any existing shapes.
+    sampleFunction(next.expression, next.domain, next.samples ?? 100)
+    this.editor.run(() => { this.deleteObject(action.id); this.plotFunction(next) })
   }
 
   private buildLineShape(
@@ -377,11 +432,24 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
 
   moveObject(id: string, position: { x: number; y: number }): void {
     const tracked = this.requireTracked(id)
-    this.editor.updateShape({
-      id: tracked.tlId,
-      type: tracked.kind,
-      x: position.x,
-      y: position.y,
+    const bounds = this.editor.getShapePageBounds(tracked.tlId)
+    if (!bounds) throw new Error(`Object "${id}" no longer exists`)
+    const delta = { x: position.x - bounds.x, y: position.y - bounds.y }
+    const ids = [tracked.tlId, ...(this.plotAuxiliaries.get(id) ?? [])]
+    const highlight = this.highlights.get(id)
+    if (highlight) ids.push(highlight)
+    this.editor.run(() => {
+      for (const shapeId of ids) {
+        const shape = this.editor.getShape(shapeId)
+        if (!shape) continue
+        const origin = this.editor.getPointInParentSpace(shape, { x: 0, y: 0 })
+        const target = this.editor.getPointInParentSpace(shape, delta)
+        this.editor.updateShape({
+          id: shapeId, type: shape.type,
+          x: shape.x + target.x - origin.x,
+          y: shape.y + target.y - origin.y,
+        })
+      }
     })
   }
 
@@ -389,18 +457,45 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
     const tracked = this.requireTracked(id)
     const props: Record<string, unknown> = {}
 
+    const supported: Record<TrackedKind, readonly string[]> = {
+      geo: ["color", "size", "dash", "fill", "text", "w", "h", "opacity"],
+      text: ["color", "size", "text", "w", "opacity"],
+      arrow: ["color", "size", "dash", "text", "opacity"],
+      line: ["color", "size", "dash", "opacity"],
+      draw: ["color", "size", "dash", "fill", "opacity"],
+    }
+    for (const field of Object.keys(patch)) {
+      if (!supported[tracked.kind].includes(field)) {
+        throw new Error(`Cannot update "${field}" on ${tracked.kind} object "${id}"`)
+      }
+    }
+
     if (patch.color !== undefined) props.color = patch.color
     if (patch.size !== undefined) props.size = patch.size
     if (tracked.kind !== "text" && patch.dash !== undefined) props.dash = patch.dash
     if ((tracked.kind === "geo" || tracked.kind === "draw") && patch.fill !== undefined) {
       props.fill = patch.fill
     }
-    if (tracked.kind === "geo" && patch.w !== undefined) props.w = patch.w
+    if ((tracked.kind === "geo" || tracked.kind === "text") && patch.w !== undefined) props.w = patch.w
+    if (tracked.kind === "text" && patch.w !== undefined) props.autoSize = false
     if (tracked.kind === "geo" && patch.h !== undefined) props.h = patch.h
-    if (tracked.kind === "text" && patch.text !== undefined) {
-      const text = sanitizeMathNotation(patch.text)
-      props.richText = toRichText(text)
+    if (patch.text !== undefined) {
+      const text = tracked.summaryKind === "equation" ? sanitizeMathNotation(patch.text) : patch.text
+      if (tracked.kind === "geo" || tracked.kind === "arrow") {
+        props.richText = toRichText("")
+        this.labels.set(tracked.tlId, text, patch.color)
+      } else props.richText = toRichText(text)
       tracked.label = text
+    }
+    if (tracked.kind === "text") {
+      const shape = this.editor.getShape(tracked.tlId)
+      if (shape?.type === "text" && (patch.w !== undefined || patch.text !== undefined || patch.size !== undefined)) {
+        const width = patch.w ?? (shape.props.autoSize ? undefined : shape.props.w)
+        if (width !== undefined) {
+          props.w = this.readableTextWidth(patch.text ?? renderPlaintextFromRichText(this.editor, shape.props.richText),
+            patch.size ?? shape.props.size, width, shape.props.font)
+        }
+      }
     }
 
     const top: { id: TLShapeId; type: TrackedKind; opacity?: number; props?: typeof props } = {
@@ -528,6 +623,7 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
   }
 
   getObjectBounds(id: string): ObjectBounds | undefined {
+    this.restoreTracked()
     const tracked = this.objects.get(id)
     if (!tracked) return undefined
     const bounds = this.editor.getShapePageBounds(tracked.tlId)
@@ -547,6 +643,7 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
    * for `getObjectBounds`, applied across the whole tracked set at once.
    */
   summarizeObjects(): TrackedObjectSummary[] {
+    this.restoreTracked()
     const summaries: TrackedObjectSummary[] = []
     const staleIds: string[] = []
 
@@ -559,11 +656,11 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
       summaries.push({
         id,
         kind: tracked.summaryKind,
-        ...(tracked.label ? { label: tracked.label } : {}),
+        ...this.liveLabel(tracked),
         x: bounds.x,
         y: bounds.y,
-        w: bounds.w,
-        h: bounds.h,
+        w: Math.max(1, bounds.w),
+        h: Math.max(1, bounds.h),
       })
     }
 
@@ -605,5 +702,26 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
       throw new Error(`Unknown id "${id}": the tldraw adapter has no object with this id`)
     }
     return tracked
+  }
+
+  private liveLabel(tracked: TrackedObject): { label?: string } {
+    const shape = this.labels.get(tracked.tlId) ?? this.editor.getShape(tracked.tlId)
+    const label = shape && "richText" in shape.props
+      ? renderPlaintextFromRichText(this.editor, shape.props.richText)
+      : tracked.label
+    return label ? { label: label.slice(0, 200) } : {}
+  }
+
+  private readableTextWidth(text: string, size: "s" | "m" | "l" | "xl", requested: number, font = "sans"): number {
+    const theme = this.editor.getCurrentTheme()
+    // tldraw 5 uses these text-size multipliers on the theme's base font size.
+    const fontSize = theme.fontSize * ({ s: 1.125, m: 1.5, l: 2.25, xl: 2.75 }[size])
+    // Preserve short labels on one line; prose can wrap, but never inside a word.
+    const parts = text.length <= 40 ? text.split(/\r?\n/) : text.split(/\s+/)
+    const minimum = Math.max(...parts.map((part) => this.editor.textMeasure.measureText(part, {
+      fontFamily: getFontFamily(theme, font), fontSize, lineHeight: theme.lineHeight,
+      fontStyle: "normal", fontWeight: "normal", padding: "0px", maxWidth: null,
+    }).w))
+    return Math.max(requested, Math.ceil(minimum) + 4)
   }
 }

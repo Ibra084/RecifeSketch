@@ -1,6 +1,7 @@
 import type { TutorContext } from "./context"
 import type { TeachingPlan } from "./teaching-protocol"
 import type { UsageEstimate } from "./usage-tracker"
+import type { QuestionSource } from "./question-source"
 
 /**
  * The provider seam: everything downstream (the pipeline, the API route)
@@ -33,6 +34,7 @@ export type TeachingPlanResult = TeachingPlanSuccess | TeachingPlanFailureResult
 
 export interface TeachingPlanRequest {
   question: string
+  source?: QuestionSource
   /** Compact summary of what's already on the board and recent history, for follow-ups. */
   context?: TutorContext
 }

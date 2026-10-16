@@ -70,8 +70,11 @@ function contentStyle(fontSize: number, maxW: number): Partial<CSSStyleDeclarati
     lineHeight: "1.45",
     fontFamily: "var(--tl-font-sans, Inter, system-ui, sans-serif)",
     whiteSpace: maxW > 0 ? "normal" : "nowrap",
-    // Wraps at maxW, shrinks to fit shorter text, and never cuts a word narrower than itself.
-    width: maxW > 0 ? "fit-content" : "max-content",
+    // Wraps at maxW, shrinks to fit shorter text, and never cuts a word narrower than itself. Sized
+    // from the content alone (max-content), never from the container: a container that is briefly
+    // narrow on first render would otherwise shrink the text to one word per line, and the size
+    // sync below would then save that narrow width for good.
+    width: "max-content",
     maxWidth: maxW > 0 ? `${maxW}px` : "none",
     minWidth: "min-content",
     padding: `${PADDING}px`,

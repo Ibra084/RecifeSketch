@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { bareLatexToMath, hasInlineMath, looksLikeBareLatex, mathSourceSummary, renderLatex, renderMixed, repairJsonEscapes, stripMathDelimiters } from "./math-render"
+import { delimitBareLatex, hasInlineMath, looksLikeBareLatex, mathSourceSummary, renderLatex, renderMixed, repairJsonEscapes, stripMathDelimiters } from "./math-render"
 
 describe("renderLatex", () => {
   it("typesets fractions and exponents as real maths markup", () => {
@@ -46,8 +46,17 @@ describe("renderMixed", () => {
     expect(html).not.toContain("\\text")
     expect(html).not.toContain("_{")
   })
-  it("keeps ordinary words upright and spaced inside bare LaTeX", () => {
-    expect(bareLatexToMath("Pull force F_{\\text{p}} on the toy")).toBe("\\text{Pull force}\\  F_{\\text{p}} \\ \\text{on the toy}")
+  it("wraps only the LaTeX in a line, leaving the words as ordinary text", () => {
+    expect(delimitBareLatex("Pull force F_{\\text{p}} on the toy")).toBe("Pull force $F_{\\text{p}}$ on the toy")
+    expect(delimitBareLatex("so F_{\\text{net}} = 66 N here")).toBe("so $F_{\\text{net}} = 66$ N here")
+  })
+  it("keeps **bold** headings and spacing when a line has bare LaTeX in it", () => {
+    // What went wrong on the board: the whole line was typeset as maths - italic, spaces gone, literal ∗∗.
+    const line = "**Question 2** - I: Pressure increases \\rightarrow faster rate"
+    expect(delimitBareLatex(line)).toBe("**Question 2** - I: Pressure increases $\\rightarrow$ faster rate")
+    const html = renderMixed(line)
+    expect(html).toMatch(/^<strong>Question 2<\/strong> - I: Pressure increases <span class="katex">/)
+    expect(html).toContain("faster rate")
   })
   it("bolds **headings** without letting any other markup through", () => {
     expect(renderMixed("**Part (a):** use $x$")).toMatch(/^<strong>Part \(a\):<\/strong> use <span class="katex">/)

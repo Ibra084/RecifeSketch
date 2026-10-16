@@ -12,12 +12,19 @@ import type {
   CreatePolygonAction,
   CreateShapeAction,
   DrawArrowAction,
+  DrawGraphAction,
+  MarkImageAction,
+  HighlightTextAction,
+  DrawApparatusAction,
+  DrawInclineAction,
+  DrawOnInclineAction,
   DrawLineAction,
   DrawingColor,
   FocusCameraAction,
   PlotFunctionAction,
   Region,
   UpdateObjectPatch,
+  UpdateGraphAction,
   UpdatePlotAction,
   WriteEquationAction,
   WriteTextAction,
@@ -46,6 +53,23 @@ export interface DrawingAdapter {
   writeEquation(action: WriteEquationAction): void
   plotFunction(action: PlotFunctionAction): void
   updatePlot(action: UpdatePlotAction): void
+  /** A live Desmos graph, plotted from its equations. */
+  drawGraph(action: DrawGraphAction): void
+  updateGraph(action: UpdateGraphAction): void
+  /** A box/circle/underline inside the image the model was shown (see setImageRegion). */
+  markImage(action: MarkImageAction): void
+  /** Printed words in that image, highlighted on their exact (OCR) pixel boxes. */
+  highlightText(action: HighlightTextAction): void
+  /** A piece of lab apparatus from the kit, as editable shapes. */
+  drawApparatus(action: DrawApparatusAction): void
+  /** A slope from its angle and downhill direction, with the angle marked. */
+  drawIncline(action: DrawInclineAction): void
+  /** An object resting on a slope, tilted to match. */
+  drawOnIncline(action: DrawOnInclineAction): void
+  /** The slope an object is (or rests on), for slope-relative force directions. */
+  getObjectSlope?(id: string): { drawnAngle: number; downhill: "left" | "right" } | undefined
+  /** Where on the board the image the model was shown sits, for mark_image. Null when there is none. */
+  setImageRegion?(region: ObjectBounds | null): void
 
   moveObject(id: string, position: { x: number; y: number }): void
   updateObject(id: string, patch: UpdateObjectPatch): void

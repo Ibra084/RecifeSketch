@@ -66,7 +66,10 @@ export function hasInlineMath(text: string): boolean {
  * clean-up (`x^2` -> `x²`) so a model that forgot the delimiters reads fine.
  */
 export function renderMixed(text: string): string {
-  if (!hasInlineMath(text) && looksLikeBareLatex(text)) return renderLatex(bareLatexToMath(text))
+  if (!hasInlineMath(text) && looksLikeBareLatex(text)) {
+    const delimited = delimitBareLatex(text)
+    if (delimited !== text) return renderMixed(delimited)
+  }
   let html = ""
   let last = 0
   for (const match of text.matchAll(MATH_SEGMENT)) {
@@ -83,26 +86,40 @@ export function looksLikeBareLatex(text: string): boolean {
   return /\\[a-zA-Z]+|[_^]\{/.test(repairJsonEscapes(text))
 }
 
-// A plain word (two or more letters, optional trailing punctuation) - prose, not a maths symbol.
-const PLAIN_WORD = /^[A-Za-z]{2,}[,.;:!?]?$/
+// A word that is LaTeX: a \command, a sub/superscript or braces, or a relation.
+const LATEX_TOKEN = /\\[a-zA-Z]+|[_^{}]|[=<>]/
+// Numbers and operators continue a maths run that's already open ("F_{net} = 66").
+const CONTINUES_MATHS = /^[-+−×*/=<>()0-9.,]+$/
 
 /**
- * Turns bare LaTeX into one maths expression, keeping runs of ordinary
- * words as upright text with their spaces ("Pull force F_{\text{p}}" ->
- * "\text{Pull force }F_{\text{p}}"), since maths mode would otherwise
- * italicise them and drop the spaces.
+ * Wraps just the LaTeX-looking parts of a line in $...$ ("Pressure rises
+ * \rightarrow faster" -> "Pressure rises $\rightarrow$ faster"), so the
+ * words stay ordinary text - spaced, upright, and **bold** where marked -
+ * instead of the whole line being typeset as one maths expression.
  */
-export function bareLatexToMath(text: string): string {
-  // Group consecutive plain words; everything else is a maths token (spaces between those don't matter in maths mode).
-  const parts: { words: boolean; text: string }[] = []
-  for (const token of repairJsonEscapes(text).trim().split(/\s+/)) {
-    const words = PLAIN_WORD.test(token)
-    const last = parts.at(-1)
-    if (words && last?.words) last.text += ` ${token}`
-    else parts.push({ words, text: token })
+export function delimitBareLatex(text: string): string {
+  let out = ""
+  let run: string[] = []
+  const flush = () => {
+    if (run.length === 0) return
+    let trailing = ""
+    while (run.length && /^\s+$/.test(run.at(-1)!)) trailing = run.pop()! + trailing
+    out += `$${run.join("")}$${trailing}`
+    run = []
   }
-  // "\ " is an explicit space, so a word run stays separated from the maths either side of it.
-  return parts.map((part) => (part.words ? `\\ \\text{${part.text}}\\ ` : part.text)).join(" ").replace(/^\\ /, "").replace(/\\ $/, "").trim()
+  for (const piece of repairJsonEscapes(text).split(/(\s+)/)) {
+    if (piece === "" || /^\s+$/.test(piece)) {
+      if (run.length && !piece.includes("\n")) run.push(piece)
+      else { flush(); out += piece }
+      continue
+    }
+    // Bold markers belong to the prose; maths inside them is typeset unbolded.
+    const core = piece.replace(/^\*\*|\*\*$/g, "")
+    if (LATEX_TOKEN.test(core) || (run.length > 0 && CONTINUES_MATHS.test(core))) run.push(core)
+    else { flush(); out += piece }
+  }
+  flush()
+  return out
 }
 
 /** Prose: escaped first, then `**bold**` (e.g. a "**Part (a)**" heading) and line breaks are the only markup added. */

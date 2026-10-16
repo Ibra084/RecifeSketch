@@ -35,6 +35,13 @@ as a separate app from `RecifeAI/`.
 - The AI must create **arbitrary illustrations using editable drawing
   primitives** — never static generated images, and never a hardcoded
   library of subject-specific diagrams it picks from.
+  - Exception (approved by the owner, 2026-10-17): a **component kit** of
+    standard lab apparatus (`draw_apparatus`: beaker, flasks, tubes,
+    burette, thermometer, Bunsen burner, tripod & gauze, clamp stand…) is
+    allowed — like circuit symbols, these are individual components
+    generated as editable shapes from parameters (position, size, fill),
+    which the AI composes into setups itself. Whole canned diagrams or
+    lessons remain forbidden.
 - The whiteboard **persists across chat turns**: follow-up questions must
   be able to modify existing objects on the board, not just add new,
   disconnected ones.

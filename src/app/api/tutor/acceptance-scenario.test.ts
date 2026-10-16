@@ -131,7 +131,7 @@ describe("Phase 5 acceptance scenario (scripted - see header)", () => {
         {
           question: "Explain how a transformer works.",
           concept: "Transformers",
-          lastCommentary: "The secondary coil picks up the changing magnetic flux.",
+          explanation: "The secondary coil picks up the changing magnetic flux.",
         },
       ],
     }
@@ -192,8 +192,8 @@ describe("Phase 5 acceptance scenario (scripted - see header)", () => {
         { id: "ac-explanation", kind: "text", label: "AC reverses direction, so flux keeps changing", x: 0, y: 230, w: 300, h: 20 },
       ],
       history: [
-        { question: "Explain how a transformer works.", concept: "Transformers", lastCommentary: "Drew the coils." },
-        { question: "Why does it need alternating current?", concept: "Transformers", lastCommentary: "Explained flux change." },
+        { question: "Explain how a transformer works.", concept: "Transformers", explanation: "Drew the coils." },
+        { question: "Why does it need alternating current?", concept: "Transformers", explanation: "Explained flux change." },
       ],
     }
 

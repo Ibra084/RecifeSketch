@@ -16,6 +16,7 @@ describe("GeminiProvider deadline", () => {
       calls.push({ url: String(url), init })
       if (calls.length === 1) return new Response("overloaded", { status: 503 })
       const plan = { concept: "Current", level: "ks3", steps: [{ commentary: "Use Ohm's law.", actions: [
+        { type: "create_shape", id: "resistor", shape: "rectangle", x: 100, y: 60, w: 80, h: 30 },
         { type: "write_text", id: "hint", position: { x: 100, y: 100 }, text: "I = V / R" },
       ] }] }
       return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(plan) }] } }] }))
@@ -57,5 +58,24 @@ describe("GeminiProvider deadline", () => {
     // Per-attempt timeouts would take ~2 x 200ms plus the retry delay; one shared deadline stops at ~200ms.
     expect(elapsed).toBeLessThan(380)
     expect(calls).toBe(1)
+  })
+})
+
+describe("visual answers", () => {
+  it("sends a text-only answer back once with the reason, and uses the visual retry", async () => {
+    const bodies: string[] = []
+    const config = loadAIConfig({ GEMINI_API_KEY: "test", AI_MAX_RETRIES: "1" })
+    const provider = new GeminiProvider({ config, fetchImpl: async (_url, init) => {
+      bodies.push(String(init?.body))
+      const actions = bodies.length === 1
+        ? [{ type: "write_text", id: "t", position: { x: 0, y: 0 }, text: "Roots become asymptotes" }]
+        : [{ type: "draw_graph", id: "g", position: { x: 0, y: 0 }, expressions: [{ latex: "y=\\frac{1}{x}" }] }]
+      const plan = { concept: "Reciprocal graphs", level: "ks4", steps: [{ commentary: "Sketch it.", actions }] }
+      return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(plan) }] } }] }))
+    } })
+    const result = await provider.generateTeachingPlan({ question: "Sketch the graph of y = 1/f(x)" })
+    expect(bodies).toHaveLength(2)
+    expect(bodies[1]).toContain("must DRAW something visual")
+    expect(result.ok && result.plan.steps[0].actions[0].type).toBe("draw_graph")
   })
 })

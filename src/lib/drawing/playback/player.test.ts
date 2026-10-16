@@ -304,4 +304,16 @@ describe("DrawingPlayer", () => {
     expect(player.getSnapshot().state).toBe("cancelled")
     expect(adapter.calls).toHaveLength(1)
   })
+
+  it("lets the caller act on each drawn object (e.g. move the camera) before it is revealed", async () => {
+    const adapter = new FakeDrawingAdapter()
+    const seen: string[] = []
+    const player = new DrawingPlayer({
+      engine: new DrawingEngine(adapter),
+      beforeReveal: (drawn) => { seen.push(`${drawn.type}:${"id" in drawn ? drawn.id : ""}:${adapter.calls.length}`) },
+    })
+    await player.play([{ actions: [shapeAction("a"), { type: "draw_force", id: "f", on: "a", angle: 270 }] }])
+    // Each hook runs after its object exists (call count) - and a draw_force arrives as the concrete arrow it became.
+    expect(seen).toEqual(["create_shape:a:1", "draw_arrow:f:2"])
+  })
 })

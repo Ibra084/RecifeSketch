@@ -10,6 +10,7 @@
  */
 
 import type { Point } from "./protocol"
+import { convertAbsBars } from "./abs-bars"
 
 // ─── Tokenizer ───────────────────────────────────────────────────────────
 
@@ -21,7 +22,9 @@ type Token =
   | { kind: "rparen" }
   | { kind: "comma" }
 
-function tokenize(expression: string): Token[] {
+function tokenize(source: string): Token[] {
+  // |x - 2| is how absolute value is usually written; the grammar knows it as abs(x - 2).
+  const expression = source.includes("|") ? convertAbsBars(source, "abs(", ")") : source
   const tokens: Token[] = []
   let i = 0
 

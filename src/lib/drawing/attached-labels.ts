@@ -62,7 +62,11 @@ export class AttachedLabels {
     this.layingOut = true
     try {
       const shapes = this.editor.getCurrentPageShapes()
-      const labels = shapes.filter(shape => typeof shape.meta.recifeLabelOwner === "string").sort((a, b) => a.id.localeCompare(b.id))
+      // Arrow labels first: each has one natural spot (just past its arrowhead), while a shape's label
+      // can sit on any side - so shapes' labels fit around the arrows', not the other way round.
+      const isArrowLabel = (label: TLShape) => this.editor.getShape(label.meta.recifeLabelOwner as TLShapeId)?.type === "arrow"
+      const labels = shapes.filter(shape => typeof shape.meta.recifeLabelOwner === "string")
+        .sort((a, b) => Number(isArrowLabel(b)) - Number(isArrowLabel(a)) || a.id.localeCompare(b.id))
       const others = shapes.filter(shape => !shape.meta.recifeLabelOwner)
         .flatMap(shape => { const box = this.editor.getShapePageBounds(shape); return box ? [{ shape, box }] : [] })
       const placedLabels: LabelBox[] = []
@@ -94,13 +98,14 @@ export class AttachedLabels {
 
   /**
    * Whether a label box would cover a shape. Thin strokes (lines, polygons,
-   * arrows, sketches) only block where their outline actually runs - so a
+   * arrows, sketches, apparatus) only block where their outline actually runs - so a
    * label can sit inside an open triangle beside a slope - while solid
    * symbols and text block their whole box.
    */
   private covers(shape: TLShape, shapeBox: LabelBox, box: LabelBox): boolean {
     if (!boxesOverlap(box, shapeBox, 6)) return false
-    if (shape.type !== "line" && shape.type !== "draw" && shape.type !== "arrow") return true
+    // Apparatus (a group of outlines) counts as thin strokes too, so labels can sit in its open spaces.
+    if (shape.type !== "line" && shape.type !== "draw" && shape.type !== "arrow" && shape.type !== "group") return true
     const pad = 6
     const corners = [
       { x: box.x - pad, y: box.y - pad }, { x: box.x + box.w + pad, y: box.y - pad },

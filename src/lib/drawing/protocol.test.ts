@@ -277,3 +277,15 @@ describe("drawingProgramSchema", () => {
     expect(result.success).toBe(false)
   })
 })
+
+describe("draw_graph", () => {
+  const base = { type: "draw_graph", id: "g", position: { x: 0, y: 0 }, expressions: [{ latex: "y=x^2" }] }
+  it("accepts equations with an optional view", () => {
+    expect(drawingActionSchema.safeParse({ ...base, bounds: { left: -5, right: 5, bottom: -2, top: 10 } }).success).toBe(true)
+  })
+  it("rejects an empty graph, too many lines, or an inside-out view", () => {
+    expect(drawingActionSchema.safeParse({ ...base, expressions: [] }).success).toBe(false)
+    expect(drawingActionSchema.safeParse({ ...base, expressions: Array(13).fill({ latex: "y=x" }) }).success).toBe(false)
+    expect(drawingActionSchema.safeParse({ ...base, bounds: { left: 5, right: -5, bottom: 0, top: 1 } }).success).toBe(false)
+  })
+})

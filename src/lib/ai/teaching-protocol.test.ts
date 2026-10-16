@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
+  protectEarlierWork,
+  visualPlanIssue,
   resolveTeachingPlanIds,
   teachingPlanSchema,
   toDrawingSequence,
@@ -87,6 +89,18 @@ describe("toDrawingSequence", () => {
 })
 
 describe("resolveTeachingPlanIds", () => {
+  it("keeps a force attached to its object when that object's id is renamed to avoid a collision", () => {
+    const plan = teachingPlanSchema.parse({
+      concept: "forces", level: "ks4", steps: [{ commentary: "Weight acts down.", actions: [
+        { type: "create_shape", id: "A", shape: "rectangle", x: 0, y: 0, w: 80, h: 40 },
+        { type: "draw_force", id: "W", on: "A", angle: 270 },
+      ] }],
+    })
+    const [shape, force] = resolveTeachingPlanIds(plan, ["A"]).steps[0].actions
+    expect(shape).toMatchObject({ id: "A-2" })
+    expect(force).toMatchObject({ type: "draw_force", on: "A-2" })
+  })
+
   it("leaves ids unchanged when there is no collision with existing ids", () => {
     const plan = teachingPlanSchema.parse(validPlan())
     const resolved = resolveTeachingPlanIds(plan, [])
@@ -189,5 +203,52 @@ describe("resolveTeachingPlanIds", () => {
     }
     const resolved = resolveTeachingPlanIds(plan, ["primary-coil"])
     expect((resolved.steps[0].actions[0] as { id: string }).id).toBe("primary-coil")
+  })
+})
+
+describe("protectEarlierWork", () => {
+  const plan = teachingPlanSchema.parse({
+    concept: "graphs", level: "ks4", steps: [{ commentary: "Now y = sin x.", actions: [
+      { type: "delete_object", id: "graph1" },
+      { type: "clear_region", region: { x: 0, y: 0, w: 600, h: 400 } },
+      { type: "draw_graph", id: "graph2", position: { x: 0, y: 0 }, expressions: [{ latex: "y=\sin(x)" }] },
+      { type: "delete_object", id: "scratch" },
+    ] }],
+  })
+  const kept = (question: string) => protectEarlierWork(plan, ["graph1"], question).steps[0].actions.map((a) => a.type + ("id" in a ? `:${a.id}` : ""))
+
+  it("keeps an earlier graph when a new graph is asked for", () => {
+    expect(kept("Now draw y = sin x")).toEqual(["draw_graph:graph2", "delete_object:scratch"])
+  })
+  it("lets the student remove earlier work when they ask to", () => {
+    expect(kept("Remove the old graph and draw y = sin x")).toHaveLength(4)
+    expect(kept("Clear the board")).toHaveLength(4)
+  })
+})
+
+describe("visualPlanIssue", () => {
+  const textOnly = teachingPlanSchema.parse({ concept: "reciprocal graphs", level: "ks4", steps: [
+    { commentary: "The roots of f(x) become vertical asymptotes.", actions: [{ type: "write_text", id: "t1", position: { x: 0, y: 0 }, text: "Roots become asymptotes" }] },
+  ] })
+  it("sends back a plan that only writes text", () => {
+    expect(visualPlanIssue(textOnly, "Help me with this question")).toMatch(/must DRAW something visual/)
+  })
+  it("sends back a graph question whose first steps don't draw the graph", () => {
+    const boxesOnly = teachingPlanSchema.parse({ concept: "reciprocal graphs", level: "ks4", steps: [
+      { commentary: "Look at the asymptote.", actions: [{ type: "create_shape", id: "b", shape: "rectangle", x: 0, y: 0, w: 50, h: 20 }] },
+    ] })
+    expect(visualPlanIssue(boxesOnly, "Sketch the graph of y = 1/f(x)")).toMatch(/FIRST step must draw the graph/)
+  })
+  it("accepts a graph question that draws its graph straight away", () => {
+    const graphed = teachingPlanSchema.parse({ concept: "reciprocal graphs", level: "ks4", steps: [
+      { commentary: "Here is y = 1/f(x).", actions: [{ type: "draw_graph", id: "g", position: { x: 0, y: 0 }, expressions: [{ latex: "y=\frac{1}{x^2-2x}" }] }] },
+    ] })
+    expect(visualPlanIssue(graphed, "Sketch the graph of y = 1/f(x)")).toBeNull()
+  })
+  it("accepts a non-graph diagram answer", () => {
+    const diagram = teachingPlanSchema.parse({ concept: "forces", level: "ks3", steps: [
+      { commentary: "The block.", actions: [{ type: "create_shape", id: "blk", shape: "rectangle", x: 0, y: 0, w: 80, h: 40 }] },
+    ] })
+    expect(visualPlanIssue(diagram, "What forces act on a block resting on a table?")).toBeNull()
   })
 })

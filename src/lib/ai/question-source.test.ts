@@ -27,21 +27,19 @@ describe("past-paper question input", () => {
     expect(prompt).not.toContain("PAST-PAPER")
     expect(prompt).toMatch(/first (incorrect|wrong) step/i)
     expect(prompt).toMatch(/do not solve or rewrite the whole/i)
-    expect(prompt).toContain("x = 0 + fx * 400")
+    expect(prompt).toContain("mark_image")
     expect(questionSourceSchema.safeParse({ kind: "board", text: "x" }).success).toBe(true)
     expect(questionSourceSchema.safeParse({ kind: "nope", text: "x" }).success).toBe(false)
   })
 
-  it("gives an explicit fraction-to-page-coordinate formula, not just a vague instruction", () => {
-    // Models are much better at estimating where something sits as a
-    // fraction of the image (e.g. "the value is about 20% across, 40%
-    // down") than guessing absolute page coordinates directly - this is
-    // the fix for annotations landing in the wrong place relative to a
-    // pasted question image.
+  it("has the model mark things in the image by box, never by coordinates it works out itself", () => {
+    // Models localise objects in an image well in their native [ymin, xmin, ymax, xmax] 0-1000 box
+    // format; converting to page coordinates themselves is where marks used to land off-target.
     const prompt = sourcePrompt({ image: { mimeType: "image/png", data: "x", width: 100, height: 100 }, region: { x: 100, y: 80, w: 600, h: 400 } })
-    expect(prompt).toMatch(/fx|fraction/i)
-    expect(prompt).toContain("x = 100 + fx")
-    expect(prompt).toContain("y = 80 + fy")
+    expect(prompt).toContain("mark_image { id, box: [ymin, xmin, ymax, xmax]")
+    expect(prompt).toMatch(/0-1000 scale/)
+    expect(prompt).toMatch(/never convert coordinates/)
+    expect(prompt).not.toMatch(/fx */)
   })
   it("sends images server-side and retains them through JSON repair", async () => {
     const requests: { contents: { parts: unknown[] }[]; generationConfig: { thinkingConfig: unknown } }[] = []
@@ -63,5 +61,19 @@ describe("past-paper question input", () => {
       expect(request.generationConfig.thinkingConfig).toEqual({ thinkingLevel: "low" })
     }
     if (result.ok) expect(result.usage.approxOutputTokens).toBe(25)
+  })
+})
+
+describe("selection mode", () => {
+  it("frames the snapshot as exactly what the student selected, and still marks by box", () => {
+    const prompt = sourcePrompt({
+      kind: "selection",
+      image: { mimeType: "image/jpeg", data: "x".repeat(16), width: 100, height: 100 },
+      region: { x: 0, y: 0, w: 300, h: 120 },
+    })
+    expect(prompt).toContain("SELECTION MODE")
+    expect(prompt).toContain("Selected area bounds")
+    expect(prompt).toContain("mark_image")
+    expect(prompt).not.toContain("PAST-PAPER")
   })
 })

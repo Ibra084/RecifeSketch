@@ -12,10 +12,17 @@ import type {
   CreatePolygonAction,
   CreateShapeAction,
   DrawArrowAction,
+  DrawGraphAction,
+  MarkImageAction,
+  HighlightTextAction,
+  DrawApparatusAction,
+  DrawInclineAction,
+  DrawOnInclineAction,
   DrawLineAction,
   FocusCameraAction,
   PlotFunctionAction,
   UpdateObjectPatch,
+  UpdateGraphAction,
   UpdatePlotAction,
   WriteEquationAction,
   WriteTextAction,
@@ -31,6 +38,13 @@ export type FakeAdapterCall =
   | { method: "writeText"; action: WriteTextAction }
   | { method: "writeEquation"; action: WriteEquationAction }
   | { method: "plotFunction"; action: PlotFunctionAction }
+  | { method: "drawGraph"; action: DrawGraphAction }
+  | { method: "updateGraph"; action: UpdateGraphAction }
+  | { method: "markImage"; action: MarkImageAction }
+  | { method: "highlightText"; action: HighlightTextAction }
+  | { method: "drawApparatus"; action: DrawApparatusAction }
+  | { method: "drawIncline"; action: DrawInclineAction }
+  | { method: "drawOnIncline"; action: DrawOnInclineAction }
   | { method: "moveObject"; id: string; position: { x: number; y: number } }
   | { method: "updateObject"; id: string; patch: UpdateObjectPatch }
   | { method: "deleteObject"; id: string }
@@ -108,6 +122,56 @@ export class FakeDrawingAdapter implements DrawingAdapter {
     this.record({ method: "plotFunction", action })
     const position = action.position ?? { x: 0, y: 0 }
     this.bounds.set(action.id, { x: position.x, y: position.y, w: 100, h: 100 })
+  }
+
+  drawGraph(action: DrawGraphAction): void {
+    this.record({ method: "drawGraph", action })
+    this.bounds.set(action.id, { x: action.position.x, y: action.position.y, w: action.w ?? 520, h: action.h ?? 380 })
+  }
+
+  updateGraph(action: UpdateGraphAction): void {
+    this.record({ method: "updateGraph", action })
+  }
+
+  markImage(action: MarkImageAction): void {
+    this.record({ method: "markImage", action })
+    const [ymin, xmin, ymax, xmax] = action.box
+    this.bounds.set(action.id, { x: xmin, y: ymin, w: xmax - xmin, h: ymax - ymin })
+  }
+
+  drawApparatus(action: DrawApparatusAction): void {
+    this.record({ method: "drawApparatus", action })
+    const h = action.height ?? 180
+    const at = action.position ?? { x: 0, y: 0 }
+    this.bounds.set(action.id, { x: at.x, y: at.y, w: h * 0.8, h })
+  }
+
+  /** Slopes recorded by drawIncline, inherited by objects placed on them - as the real adapter does. */
+  private readonly slopes = new Map<string, { drawnAngle: number; downhill: "left" | "right" }>()
+
+  drawIncline(action: DrawInclineAction): void {
+    this.record({ method: "drawIncline", action })
+    const base = action.base ?? 400
+    this.bounds.set(action.id, { x: action.position.x, y: action.position.y, w: base, h: base * 0.3 })
+    this.slopes.set(action.id, { drawnAngle: Math.max(action.angle, 15), downhill: action.downhill })
+  }
+
+  drawOnIncline(action: DrawOnInclineAction): void {
+    this.record({ method: "drawOnIncline", action })
+    const slope = this.bounds.get(action.incline)
+    if (!slope) throw new Error(`Unknown incline "${action.incline}"`)
+    this.bounds.set(action.id, { x: slope.x + slope.w / 2, y: slope.y, w: action.w ?? 90, h: action.h ?? 45 })
+    const s = this.slopes.get(action.incline)
+    if (s) this.slopes.set(action.id, s)
+  }
+
+  getObjectSlope(id: string) {
+    return this.slopes.get(id)
+  }
+
+  highlightText(action: HighlightTextAction): void {
+    this.record({ method: "highlightText", action })
+    this.bounds.set(action.id, { x: 0, y: 0, w: 100, h: 20 })
   }
 
   moveObject(id: string, position: { x: number; y: number }): void {

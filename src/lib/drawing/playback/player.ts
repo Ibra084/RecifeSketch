@@ -42,6 +42,11 @@ export interface DrawingPlayerOptions {
    * the player aborts `signal`; the gate should then resolve promptly.
    */
   waitBetweenSteps?: (completedStepIndex: number, signal: AbortSignal) => Promise<void>
+  /**
+   * Called once each action's object exists on the board, before its reveal plays -
+   * e.g. to bring it into view and move the tutor beside it. Playback waits for it.
+   */
+  beforeReveal?: (drawn: DrawingAction, signal: AbortSignal) => Promise<void> | void
 }
 
 export class DrawingPlayer {
@@ -51,6 +56,7 @@ export class DrawingPlayer {
   private readonly baseActionDurationMs: number
   private readonly clock: PlaybackClock
   private readonly waitBetweenSteps: DrawingPlayerOptions["waitBetweenSteps"]
+  private readonly beforeReveal: DrawingPlayerOptions["beforeReveal"]
   private speed: number
 
   private state: PlaybackState = "idle"
@@ -72,6 +78,7 @@ export class DrawingPlayer {
     this.baseActionDurationMs = options.baseActionDurationMs ?? DEFAULT_ACTION_DURATION_MS
     this.clock = options.clock ?? REALTIME_CLOCK
     this.waitBetweenSteps = options.waitBetweenSteps
+    this.beforeReveal = options.beforeReveal
     this.speed = clampSpeed(options.speed ?? 1)
   }
 
@@ -151,7 +158,10 @@ export class DrawingPlayer {
         }
 
         // Animate what was actually drawn (a draw_force becomes a concrete arrow).
-        await this.animate(result.executed[0]?.action ?? action)
+        const drawn = result.executed[0]?.action ?? action
+        await this.beforeReveal?.(drawn, this.abortController.signal)
+        if (this.cancelled) return this.setState("cancelled")
+        await this.animate(drawn)
         this.actionIndex++
         this.emit()
         if (this.cancelled) return this.setState("cancelled")

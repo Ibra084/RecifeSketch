@@ -74,3 +74,11 @@ describe("isAIConfigured", () => {
     expect(isAIConfigured(loadAIConfig({ GEMINI_API_KEY: "key" }))).toBe(true)
   })
 })
+
+describe("Desmos availability", () => {
+  it("is on only when DESMOS_KEY is set (the key itself is not part of the AI config)", () => {
+    expect(loadAIConfig({ DESMOS_KEY: "abc" }).desmos).toBe(true)
+    expect(loadAIConfig({ DESMOS_KEY: "  " }).desmos).toBe(false)
+    expect(JSON.stringify(loadAIConfig({ DESMOS_KEY: "secret-key" }))).not.toContain("secret-key")
+  })
+})

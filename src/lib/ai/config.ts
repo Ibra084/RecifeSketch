@@ -23,6 +23,8 @@ export interface AIConfig {
     capacity: number
     refillPerSec: number
   }
+  /** A Desmos API key is configured (DESMOS_KEY), so graphs can be drawn as live Desmos graphs. */
+  desmos?: boolean
 }
 
 const DEFAULTS = {
@@ -82,6 +84,7 @@ export function loadAIConfig(env: Record<string, string | undefined> = process.e
         DEFAULTS.rateLimitRefillPerSec
       ),
     },
+    desmos: nonEmpty(env.DESMOS_KEY) !== null,
   }
 }
 

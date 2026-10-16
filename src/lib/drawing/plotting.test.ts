@@ -144,3 +144,11 @@ describe("computeNiceTicks", () => {
     }
   })
 })
+
+describe("absolute value", () => {
+  it("plots |x| bars the same as abs()", () => {
+    expect(evaluateExpression("|x - 2| - 1", -3)).toBe(4)
+    expect(evaluateExpression("abs(x - 2) - 1", -3)).toBe(4)
+    expect(evaluateExpression("2*|x| + |x - 1|", -1)).toBe(4)
+  })
+})

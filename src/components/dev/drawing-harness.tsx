@@ -5,9 +5,10 @@ import { transformerFixture } from "./transformer-fixture"
 import { Tldraw, type Editor } from "tldraw"
 import "tldraw/tldraw.css"
 import { MathShapeUtil } from "@/lib/drawing/math-shape"
+import { GraphShapeUtil } from "@/lib/drawing/graph-shape"
 
 // Module-level so tldraw sees a stable array across renders.
-const shapeUtils = [MathShapeUtil]
+const shapeUtils = [MathShapeUtil, GraphShapeUtil]
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { DrawingEngine, type DrawingRunResult } from "@/lib/drawing/engine"
@@ -116,6 +117,8 @@ export function DrawingHarness() {
 
   function handleMount(editor: Editor) {
     editorRef.current = editor
+    // Dev harness only: lets a developer inspect the board from the browser console.
+    ;(window as unknown as { harnessEditor?: Editor }).harnessEditor = editor
     adapterRef.current?.dispose()
     adapterRef.current = new TldrawDrawingAdapter(editor)
     engineRef.current = new DrawingEngine(adapterRef.current)

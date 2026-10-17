@@ -48,30 +48,39 @@ const isInlineImage = (asset: TLAsset) =>
   (asset.type === "image" || asset.type === "video") && typeof asset.props.src === "string" && asset.props.src.startsWith("data:")
 
 /**
+ * Uploads in progress or done, shared by every editor on the page: the same
+ * embedded image is only ever uploaded once, even when the whiteboard mounts
+ * twice (React does that in development) or the mover runs again mid-upload.
+ */
+const uploads = new Map<string, Promise<string>>()
+const uploadKey = (boardId: string, asset: TLAsset) =>
+  `${boardId}:${asset.id}:${asset.props.src!.length}:${asset.props.src!.slice(-64)}`
+
+/**
  * Moves every image still embedded in the board (older boards, the attached
- * question photo) into storage, swapping in its link. Each image is moved at
- * most once at a time; failures are left embedded and retried next time.
+ * question photo) into storage, swapping in its link. Failures are left
+ * embedded and retried the next time it runs.
  */
 export function createInlineImageMover(editor: Editor, boardId: string): () => void {
-  const moving = new Set<string>()
   return () => {
     for (const asset of editor.getAssets()) {
-      if (!isInlineImage(asset) || moving.has(asset.id)) continue
-      moving.add(asset.id)
-      void (async () => {
-        try {
-          const blob = await (await fetch(asset.props.src!)).blob()
-          const src = await upload(boardId, blob)
+      if (!isInlineImage(asset)) continue
+      const key = uploadKey(boardId, asset)
+      let pending = uploads.get(key)
+      if (!pending) {
+        pending = fetch(asset.props.src!).then((r) => r.blob()).then((blob) => upload(boardId, blob))
+        uploads.set(key, pending)
+        pending.catch(() => uploads.delete(key)) // a failed upload may be retried
+      }
+      void pending.then(
+        (src) => {
           const current = editor.getAsset(asset.id)
           if (current && current.props.src === asset.props.src) {
             editor.updateAssets([{ ...current, props: { ...current.props, src } } as TLAsset])
           }
-        } catch (err) {
-          console.warn("[whiteboard] image not moved to storage yet; will retry", err)
-        } finally {
-          moving.delete(asset.id)
-        }
-      })()
+        },
+        (err) => console.warn("[whiteboard] image not moved to storage yet; will retry", err)
+      )
     }
   }
 }

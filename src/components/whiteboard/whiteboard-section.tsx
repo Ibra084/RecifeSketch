@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
-import { Tldraw, useValue, type Editor } from "tldraw"
+import { Tldraw, useValue, type Editor, type TLComponents } from "tldraw"
 import "tldraw/tldraw.css"
 import { attachBoardPersistence, type SavedBoard, type SaveStatus } from "./board-persistence"
 import { chooseStartingBoard, readBoardCache } from "./board-cache"
@@ -35,7 +35,13 @@ interface WhiteboardSectionProps {
   /** A saved board to load and autosave to the server; without it the board persists locally. */
   board?: SavedBoard
   onSaveStatus?: (status: SaveStatus) => void
+  /** Hide tldraw's style panel (colours, sizes) in the top-right corner. */
+  hideStylePanel?: boolean
 }
+
+// Module-level so tldraw sees stable objects across renders.
+const HIDDEN_STYLE_PANEL: TLComponents = { StylePanel: null }
+const DEFAULT_COMPONENTS: TLComponents = {}
 
 export function WhiteboardSection(props: WhiteboardSectionProps) {
   const { board } = props
@@ -63,7 +69,7 @@ export function WhiteboardSection(props: WhiteboardSectionProps) {
   return <WhiteboardCanvas key={opened.id} {...props} board={opened.board} />
 }
 
-function WhiteboardCanvas({ onEditorMount, board, onSaveStatus }: WhiteboardSectionProps) {
+function WhiteboardCanvas({ onEditorMount, board, onSaveStatus, hideStylePanel }: WhiteboardSectionProps) {
   const [editor, setEditor] = useState<Editor | null>(null)
   // Read through refs so the mount callback stays stable for tldraw.
   const boardRef = useRef(board)
@@ -89,6 +95,7 @@ function WhiteboardCanvas({ onEditorMount, board, onSaveStatus }: WhiteboardSect
       <Tldraw
         persistenceKey={board ? undefined : "recife-sketch-board"}
         shapeUtils={shapeUtils}
+        components={hideStylePanel ? HIDDEN_STYLE_PANEL : DEFAULT_COMPONENTS}
         onMount={handleMount}
         licenseKey={process.env.NEXT_PUBLIC_TLDRAW_LICENSE_KEY}
       />

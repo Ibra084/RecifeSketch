@@ -6,6 +6,7 @@ import { Box, renderPlaintextFromRichText, useValue, type Editor, type TLShapeId
 import { RecifeWordmark } from "@/components/brand/recife-wordmark"
 import { BoardHeader } from "@/components/whiteboard/board-header"
 import type { SavedBoard, SaveStatus } from "@/components/whiteboard/board-persistence"
+import { useDeviceFlag } from "@/components/whiteboard/use-device-flag"
 import { AiCompanion, type CompanionState, type TutorSpeech } from "@/components/companion/ai-companion"
 import { readQuestionImageBlob } from "@/components/companion/question-image"
 import { useCompanionOrb } from "@/components/companion/use-companion-orb"
@@ -77,6 +78,7 @@ interface AppShellProps {
 
 export function AppShell({ board }: AppShellProps = {}) {
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("saved")
+  const [stylePanelHidden, setStylePanelHidden] = useDeviceFlag("recife-sketch-hide-style-panel")
   // The engine and animator live for the whiteboard's whole mounted
   // lifetime (not recreated per question), so object ids stay addressable
   // across turns - a fresh DrawingPlayer is created per `play()` call.
@@ -455,7 +457,14 @@ export function AppShell({ board }: AppShellProps = {}) {
   return (
     <div className="flex h-dvh w-full flex-col bg-surface-subtle">
       {board ? (
-        <BoardHeader title={board.title} status={saveStatus} />
+        <BoardHeader
+          boardId={board.id}
+          title={board.title}
+          status={saveStatus}
+          editTitleOnOpen={board.snapshot === null && board.title === "Untitled whiteboard"}
+          stylePanelHidden={stylePanelHidden}
+          onToggleStylePanel={() => setStylePanelHidden(!stylePanelHidden)}
+        />
       ) : (
         <header className="flex h-12 shrink-0 items-center border-b border-border-subtle bg-surface px-4">
           <RecifeWordmark />
@@ -463,7 +472,12 @@ export function AppShell({ board }: AppShellProps = {}) {
       )}
 
       <main ref={mainRef} className="relative flex-1 overflow-hidden">
-        <WhiteboardSection onEditorMount={handleEditorMount} board={board} onSaveStatus={setSaveStatus} />
+        <WhiteboardSection
+          onEditorMount={handleEditorMount}
+          board={board}
+          onSaveStatus={setSaveStatus}
+          hideStylePanel={Boolean(board) && stylePanelHidden}
+        />
         {mountedEditor && viewport && orb.position && (
           <AiCompanion
             position={orb.position}

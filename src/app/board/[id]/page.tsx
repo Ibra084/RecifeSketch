@@ -11,7 +11,12 @@ async function Board({ params }: { params: PageProps<"/board/[id]">["params"] })
   // getWhiteboard verifies the session and only returns the student's own board.
   const board = await getWhiteboard(id)
   if (!board) notFound()
-  return <AppShell key={board.id} board={{ id: board.id, title: board.title, snapshot: board.snapshot }} />
+  return (
+    <AppShell
+      key={board.id}
+      board={{ id: board.id, title: board.title, snapshot: board.snapshot, updatedAt: board.updatedAt }}
+    />
+  )
 }
 
 export default function BoardPage({ params }: PageProps<"/board/[id]">) {

@@ -42,6 +42,8 @@ function RecentCard({ board }: { board: WhiteboardSummary }) {
   return (
     <Link
       href={`/board/${board.id}`}
+      // Never prefetch a board: the payload is the whole drawing, and a prefetched copy can be stale.
+      prefetch={false}
       className="card-hover group flex flex-col rounded-2xl border border-gray-100 bg-white p-4 outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
     >
       {/* A dotted "board" thumbnail; boards themselves aren't rendered here. */}

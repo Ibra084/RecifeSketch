@@ -23,7 +23,7 @@ async function OpenWhiteboard({ className, style, children }: { className: strin
   const latest = await getLatestWhiteboard().catch(() => null)
   if (latest) {
     return (
-      <Link href={`/board/${latest.id}`} className={className} style={style}>
+      <Link href={`/board/${latest.id}`} prefetch={false} className={className} style={style}>
         {children}
       </Link>
     )

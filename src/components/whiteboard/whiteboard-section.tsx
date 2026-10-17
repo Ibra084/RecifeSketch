@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react"
 import { Tldraw, useValue, type Editor } from "tldraw"
 import "tldraw/tldraw.css"
 import { attachBoardPersistence, type SavedBoard, type SaveStatus } from "./board-persistence"
+import { chooseStartingBoard, readBoardCache } from "./board-cache"
 import { MathShapeUtil } from "@/lib/drawing/math-shape"
 import { GraphShapeUtil } from "@/lib/drawing/graph-shape"
 
@@ -36,7 +37,33 @@ interface WhiteboardSectionProps {
   onSaveStatus?: (status: SaveStatus) => void
 }
 
-export function WhiteboardSection({ onEditorMount, board, onSaveStatus }: WhiteboardSectionProps) {
+export function WhiteboardSection(props: WhiteboardSectionProps) {
+  const { board } = props
+  // A saved board opens from whichever copy is newest - the server's, or this browser's
+  // cached copy of work that never finished uploading. Decided before the editor mounts.
+  const [opened, setOpened] = useState<{ id: string; board: SavedBoard } | null>(null)
+  const boardId = board?.id
+  useEffect(() => {
+    if (!board) return
+    let cancelled = false
+    void readBoardCache(board.id).then((cached) => {
+      if (cancelled) return
+      const start = chooseStartingBoard(board, cached)
+      setOpened({ id: board.id, board: { ...board, snapshot: start.snapshot, needsSync: start.needsSync } })
+    })
+    return () => { cancelled = true }
+    // Only when a different board is opened; later server props must not reload the open board.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boardId])
+
+  if (!board) return <WhiteboardCanvas {...props} />
+  if (opened?.id !== board.id) {
+    return <div className="flex h-full w-full items-center justify-center bg-surface-subtle text-[13px] text-ink-muted">Opening whiteboard…</div>
+  }
+  return <WhiteboardCanvas key={opened.id} {...props} board={opened.board} />
+}
+
+function WhiteboardCanvas({ onEditorMount, board, onSaveStatus }: WhiteboardSectionProps) {
   const [editor, setEditor] = useState<Editor | null>(null)
   // Read through refs so the mount callback stays stable for tldraw.
   const boardRef = useRef(board)

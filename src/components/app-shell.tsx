@@ -2,7 +2,7 @@
 
 import dynamic from "next/dynamic"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Box, renderPlaintextFromRichText, useValue, type Editor, type TLShapeId } from "tldraw"
+import { Box, createShapeId, renderPlaintextFromRichText, useValue, type Editor, type TLShapeId } from "tldraw"
 import { RecifeWordmark } from "@/components/brand/recife-wordmark"
 import { BoardHeader } from "@/components/whiteboard/board-header"
 import type { SavedBoard, SaveStatus } from "@/components/whiteboard/board-persistence"
@@ -12,7 +12,8 @@ import { readQuestionImageBlob } from "@/components/companion/question-image"
 import { useCompanionOrb } from "@/components/companion/use-companion-orb"
 import { useTutor, type WhiteboardController } from "@/components/companion/use-tutor"
 import { actionFocusRect } from "@/lib/drawing/action-focus-point"
-import { focusedStudentWork } from "@/lib/drawing/authorship"
+import { focusedStudentWork, isStudentShape } from "@/lib/drawing/authorship"
+import { placeLesson, type Obstacle } from "@/lib/drawing/lesson-placement"
 import { DrawingEngine } from "@/lib/drawing/engine"
 import { DrawingPlayer } from "@/lib/drawing/playback/player"
 import { TldrawShapeAnimator } from "@/lib/drawing/playback/tldraw-animator"
@@ -38,6 +39,24 @@ const WhiteboardSection = dynamic(
     ),
   }
 )
+
+/**
+ * What a new lesson must not draw over: everything on the board except what
+ * the lesson itself deletes. The student's own work, the question and anything
+ * selected may be marked directly (an outline, an arrow pointing at it).
+ */
+function boardObstacles(editor: Editor, sequence: DrawingSequence): Obstacle[] {
+  const deleted = new Set(sequence.flatMap((step) => step.actions)
+    .flatMap((action) => (action.type === "delete_object" ? [createShapeId(action.id)] : [])))
+  const selected = new Set(editor.getSelectedShapeIds())
+  return editor.getCurrentPageShapes().flatMap((shape) => {
+    if (deleted.has(shape.id)) return []
+    const b = editor.getShapePageBounds(shape)
+    if (!b || (b.w === 0 && b.h === 0)) return []
+    const annotatable = isStudentShape(shape) || Boolean(shape.meta.recifeQuestionSource) || selected.has(shape.id)
+    return [{ x: b.x, y: b.y, w: b.w, h: b.h, annotatable }]
+  })
+}
 
 /** How long the orb lingers near the last explanation before drifting home. */
 const RETURN_HOME_DELAY_MS = 2500
@@ -220,8 +239,8 @@ export function AppShell({ board }: AppShellProps = {}) {
       if (!editor || !adapter || !("id" in drawn) || drawn.type === "delete_object") return
       const bounds = adapter.getObjectBounds(drawn.id)
       if (!bounds) return
-      // Bring it into view with as little camera movement as possible (none if it's already visible).
-      const move = cameraMoveFor(editor.getViewportPageBounds(), bounds, 60 / editor.getZoomLevel())
+      // The screen follows the writing: zoom in if it's too small to read, re-centre if it drifts off-centre.
+      const move = cameraMoveFor(editor.getViewportPageBounds(), bounds, 60 / editor.getZoomLevel(), editor.getZoomLevel())
       const duration = prefersReducedMotion() ? 0 : FOLLOW_CAMERA_MS
       if (move.kind === "pan") editor.centerOnPoint(move.center, { animation: { duration } })
       if (move.kind === "fit") editor.zoomToBounds(move.bounds, { targetZoom: 1, animation: { duration } })
@@ -250,10 +269,13 @@ export function AppShell({ board }: AppShellProps = {}) {
 
   const [boardController] = useState<WhiteboardController>(() => ({
     isReady: () => engineRef.current !== null && animatorRef.current !== null,
-    play: async (sequence, stepCommentary, imageRegion, imageText) => {
+    play: async (planned, stepCommentary, imageRegion, imageText) => {
       const engine = engineRef.current
       const animator = animatorRef.current
-      if (!engine || !animator) throw new Error("Whiteboard not ready")
+      const editor = editorRef.current
+      if (!engine || !animator || !editor) throw new Error("Whiteboard not ready")
+      // Never draw over what's already on the board: slide the lesson into clear space first.
+      const sequence = placeLesson(planned, boardObstacles(editor, planned)).steps
       adapterRef.current?.setImageRegion(imageRegion ?? null)
       adapterRef.current?.beginPlan()
       adapterRef.current?.setImageText(imageText ?? null)

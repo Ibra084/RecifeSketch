@@ -28,7 +28,7 @@ import { APPARATUS_SHAPE, buildApparatus, placeApparatus } from "./apparatus"
 import { blockOnIncline, inclineGeometry } from "./incline"
 import { hangingMassCentre, pulleyAtCorner, stringPath, tangentPoint, type Wheel } from "./mechanics"
 import { forceArrow } from "./force-geometry"
-import { copySize, cropFor, overlapArea as figureOverlap, partOnCopy, tightenToInk, tiltedRectIn, trimProseFromFigure } from "./figure-copy"
+import { copySize, cropFor, figureCrop, overlapArea as figureOverlap, partOnCopy, snapBoxToInk, tiltedRectIn } from "./figure-copy"
 import { findPhrase, pixelRectToPage, type OcrResult } from "./text-match"
 import { computeNiceTicks, mapPointsToCanvas, sampleFunction } from "./plotting"
 import { buildDrawSegments, buildLinePointsRecord } from "./tldraw-shape-builders"
@@ -769,9 +769,11 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
   copyFigure(action: CopyFigureAction): void {
     const region = this.imageRegion
     if (!region) throw new Error("There is no question image to copy a figure from. Draw the diagram with the drawing actions instead.")
-    // Only the figure: any line of the question's text (read by OCR) that the box swallowed is cut away.
-    // ...then tightened to the figure's ink, so the copy isn't padded with blank paper.
-    const box = this.imageText ? tightenToInk(trimProseFromFigure(action.box, this.imageText), this.imageText.ink) : action.box
+    // Each part is snapped onto its drawn outline, so forces start exactly on the printed block.
+    const parts = (action.parts ?? []).map((part) => ({ ...part, box: part.slope ? part.box : snapBoxToInk(part.box, this.imageText?.ink) }))
+    // Only the figure: the question's sentences are trimmed off and the crop tightened to the ink,
+    // but never through the figure's own parts - so the copy can't shrink to a sliver.
+    const box = figureCrop(action.box, parts.map((part) => part.box), this.imageText ?? undefined)
     const area = imageBoxToPage(box, region)
     // The photo on the board that the figure is in (the one it overlaps most).
     let photo: { id: TLShapeId; bounds: { x: number; y: number; w: number; h: number }; overlap: number } | undefined
@@ -797,7 +799,7 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
       },
     }])
     const copy = { x: at.x, y: at.y, w: size.w, h: size.h }
-    for (const part of action.parts ?? []) {
+    for (const part of parts) {
       if (this.objects.has(part.id)) throw new Error(`Object id "${part.id}" already exists`)
       const r = partOnCopy(imageBoxToPage(part.box, region), area, copy)
       const partTl = this.track(part.id, "geo", "shape", "part of the copied figure")

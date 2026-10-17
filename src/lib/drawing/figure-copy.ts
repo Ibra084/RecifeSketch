@@ -63,6 +63,83 @@ export function tiltedRectIn(box: Rect, degrees: number): { centre: { x: number;
 }
 
 type ImageBox = [number, number, number, number]
+type BoxIn = readonly [number, number, number, number]
+type OcrWords = { width: number; height: number; words: { x0: number; y0: number; x1: number; y1: number; line: number }[] }
+type InkGrid = { cols: number; rows: number; cells: ArrayLike<number> }
+
+const boxArea = (b: BoxIn) => Math.max(0, b[2] - b[0]) * Math.max(0, b[3] - b[1])
+function unionOf(boxes: readonly BoxIn[]): ImageBox | undefined {
+  if (boxes.length === 0) return undefined
+  return [
+    Math.min(...boxes.map((b) => b[0])), Math.min(...boxes.map((b) => b[1])),
+    Math.max(...boxes.map((b) => b[2])), Math.max(...boxes.map((b) => b[3])),
+  ]
+}
+
+/**
+ * The crop for a copied figure (boxes are [ymin, xmin, ymax, xmax], 0-1000).
+ * Starts from the model's box, trims the question's sentences off it and
+ * tightens it to the ink - but the figure's named parts are always kept whole
+ * (the copy is grown to include any part the model boxed outside it), and a
+ * trim that would throw away most of the figure is abandoned. Without those
+ * guards, a diagram printed beside its text was cut to a sliver, and the parts
+ * mapped onto that sliver came out many times their real size.
+ */
+export function figureCrop(box: BoxIn, parts: readonly BoxIn[], ocr?: OcrWords & { ink?: InkGrid }): ImageBox {
+  const protect = unionOf(parts)
+  let crop: ImageBox = [box[0], box[1], box[2], box[3]]
+  if (ocr) {
+    const trimmed = trimProseFromFigure(box, ocr, protect)
+    // A real figure is never mostly sentences: if trimming took most of it, the trim was wrong.
+    crop = boxArea(trimmed) >= 0.5 * boxArea(box) ? trimmed : crop
+    crop = tightenToInk(crop, ocr.ink)
+  }
+  return protect ? unionOf([crop, protect])! : crop
+}
+
+/**
+ * Snaps a part's box onto the figure's drawn outline: each edge moves to the
+ * nearby row/column of the ink grid that is drawn along most of the box's
+ * span (the block's own edge), so anchors and forces sit exactly on the drawn
+ * block rather than on the model's estimate. Edges with no such line nearby
+ * (a curved or tilted part, a label) stay where they were.
+ */
+export function snapBoxToInk(box: BoxIn, ink: InkGrid | undefined): ImageBox {
+  const [top, left, bottom, right] = box
+  if (!ink) return [top, left, bottom, right]
+  const cw = 1000 / ink.cols, ch = 1000 / ink.rows
+  const clampC = (c: number) => Math.min(ink.cols - 1, Math.max(0, c))
+  const clampR = (r: number) => Math.min(ink.rows - 1, Math.max(0, r))
+  const c0 = clampC(Math.floor(left / cw)), c1 = clampC(Math.ceil(right / cw) - 1)
+  const r0 = clampR(Math.floor(top / ch)), r1 = clampR(Math.ceil(bottom / ch) - 1)
+  const at = (r: number, c: number) => ink.cells[r * ink.cols + c] ? 1 : 0
+  const rowCover = (r: number) => { let n = 0; for (let c = c0; c <= c1; c++) n += at(r, c); return n / (c1 - c0 + 1) }
+  const colCover = (c: number) => { let n = 0; for (let r = r0; r <= r1; r++) n += at(r, c); return n / (r1 - r0 + 1) }
+  const THRESHOLD = 0.5
+  /** The best-covered line within reach of `from` (ties go to the nearest), or undefined if none is drawn along the span. */
+  const best = (from: number, reach: number, lo: number, hi: number, cover: (i: number) => number) => {
+    let pick: number | undefined, pickCover = 0
+    for (let i = Math.max(lo, from - reach); i <= Math.min(hi, from + reach); i++) {
+      const v = cover(i)
+      if (v < THRESHOLD) continue
+      const better = pick === undefined || v > pickCover || (v === pickCover && Math.abs(i - from) < Math.abs(pick - from))
+      if (better) { pick = i; pickCover = v }
+    }
+    return pick
+  }
+  const reachR = Math.max(2, Math.round((r1 - r0 + 1) * 0.3)), reachC = Math.max(2, Math.round((c1 - c0 + 1) * 0.3))
+  const mid = { r: Math.floor((r0 + r1) / 2), c: Math.floor((c0 + c1) / 2) }
+  const t = best(r0, reachR, 0, mid.r, rowCover)
+  const b = best(r1, reachR, mid.r + 1, ink.rows - 1, rowCover)
+  const l = best(c0, reachC, 0, mid.c, colCover)
+  const rr = best(c1, reachC, mid.c + 1, ink.cols - 1, colCover)
+  return [
+    t !== undefined ? t * ch : top,
+    l !== undefined ? l * cw : left,
+    b !== undefined ? (b + 1) * ch : bottom,
+    rr !== undefined ? (rr + 1) * cw : right,
+  ]
+}
 
 /**
  * Makes sure a figure's box holds only the figure, not the question's text:
@@ -73,7 +150,9 @@ type ImageBox = [number, number, number, number]
  */
 export function trimProseFromFigure(
   box: readonly [number, number, number, number],
-  ocr: { width: number; height: number; words: { x0: number; y0: number; x1: number; y1: number; line: number }[] }
+  ocr: OcrWords,
+  /** Area that must survive the trim (the figure's named parts): lines touching it aren't prose, and no cut may enter it. */
+  protect?: ImageBox
 ): ImageBox {
   const lines = new Map<number, { x0: number; y0: number; x1: number; y1: number; count: number }>()
   for (const w of ocr.words) {
@@ -83,7 +162,9 @@ export function trimProseFromFigure(
       ? { x0: Math.min(l.x0, r.x0), y0: Math.min(l.y0, r.y0), x1: Math.max(l.x1, r.x1), y1: Math.max(l.y1, r.y1), count: l.count + 1 }
       : { ...r, count: 1 })
   }
-  const prose = [...lines.values()].filter((l) => l.count >= 4 && l.x1 - l.x0 >= 333)
+  const touchesProtected = (l: { x0: number; y0: number; x1: number; y1: number }) =>
+    Boolean(protect) && l.x0 < protect![3] && l.x1 > protect![1] && l.y0 < protect![2] && l.y1 > protect![0]
+  const prose = [...lines.values()].filter((l) => l.count >= 4 && l.x1 - l.x0 >= 333 && !touchesProtected(l))
   let [top, left, bottom, right] = box
   const MIN = 40
   for (let pass = 0; pass < 3; pass++) {
@@ -96,6 +177,7 @@ export function trimProseFromFigure(
         const t = cut.top ?? top, b = cut.bottom ?? bottom, l = cut.left ?? left, r = cut.right ?? right
         return { t, b, l, r, kept: (b - t) * (r - l) }
       }).filter((c) => c.b - c.t >= MIN && c.r - c.l >= MIN)
+        .filter((c) => !protect || (c.t <= protect[0] && c.l <= protect[1] && c.b >= protect[2] && c.r >= protect[3]))
       if (cuts.length === 0) continue
       const best = cuts.reduce((a, c) => (c.kept > a.kept ? c : a))
       ;[top, bottom, left, right] = [best.t, best.b, best.l, best.r]

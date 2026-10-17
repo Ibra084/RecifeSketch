@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { copySize, cropFor, overlapArea, partOnCopy, tightenToInk, tiltedRectIn, trimProseFromFigure } from "./figure-copy"
+import { copySize, cropFor, figureCrop, overlapArea, partOnCopy, snapBoxToInk, tightenToInk, tiltedRectIn, trimProseFromFigure } from "./figure-copy"
 
 // The question photo shown at (100, 100), 800 x 400 on the board; its figure is the lower-left area.
 const shown = { x: 100, y: 100, w: 800, h: 400 }
@@ -77,6 +77,70 @@ describe("trimProseFromFigure", () => {
   })
   it("leaves a tight figure box alone", () => {
     expect(trimProseFromFigure([300, 50, 800, 500], ocr)).toEqual([300, 50, 800, 500])
+  })
+})
+
+describe("figureCrop (bug: lift diagram beside its text was cut to a sliver)", () => {
+  // A 1000x1000 px photo laid out like the lift question: the diagram on the left
+  // (a cable from y=80, the lift box 250-650, a "55 kg" crate inside it) and the
+  // question's sentences in a column to its right, on the same rows. OCR merges the
+  // crate's "55 kg" into the sentence beside it, so that line starts inside the figure.
+  const sentence = (line: number, y: number, x0 = 260) =>
+    Array.from({ length: 8 }, (_, i) => ({ x0: x0 + i * 90, y0: y, x1: x0 + i * 90 + 80, y1: y + 30, line }))
+  const words = [
+    ...Array.from({ length: 12 }, (_, i) => sentence(i, 100 + i * 50)).flat(),
+    { x0: 70, y0: 560, x1: 130, y1: 590, line: 9 }, // "55 kg", merged into line 9 (y=550)
+  ]
+  const ocr = { width: 1000, height: 1000, words }
+  const lift = [250, 20, 650, 200] as const
+  const crate = [520, 60, 640, 140] as const
+
+  it("keeps every named part of the figure inside the crop", () => {
+    const crop = figureCrop([80, 0, 700, 230], [lift, crate], ocr)
+    expect(crop[0]).toBeLessThanOrEqual(250)
+    expect(crop[1]).toBeLessThanOrEqual(20)
+    expect(crop[2]).toBeGreaterThanOrEqual(650)
+    expect(crop[3]).toBeGreaterThanOrEqual(200)
+  })
+
+  it("never lets the prose trim reduce a figure to a sliver, even without parts", () => {
+    const [top, left, bottom, right] = figureCrop([80, 0, 700, 230], [], ocr)
+    expect((bottom - top) * (right - left)).toBeGreaterThan(0.5 * 620 * 230)
+  })
+
+  it("grows the crop to take in a part the model boxed outside its figure box", () => {
+    const crop = figureCrop([300, 20, 600, 200], [[250, 20, 650, 200]], undefined)
+    expect(crop).toEqual([250, 20, 650, 200])
+  })
+
+  it("still trims a whole-question box down to the figure below the text", () => {
+    const below = { width: 1000, height: 1000, words: [...sentence(0, 20, 20), ...sentence(1, 70, 20)] }
+    const [top] = figureCrop([0, 0, 1000, 1000], [], below)
+    expect(top).toBeGreaterThanOrEqual(100)
+  })
+})
+
+describe("snapBoxToInk", () => {
+  // A 100x100 ink grid over the image (one cell = 10 units on the 0-1000 scale):
+  // a block outlined at rows 52-63, cols 30-45, with a string rising from its top.
+  const cells = new Uint8Array(100 * 100)
+  const set = (r: number, c: number) => (cells[r * 100 + c] = 1)
+  for (let c = 30; c <= 45; c++) { set(52, c); set(63, c) }
+  for (let r = 52; r <= 63; r++) { set(r, 30); set(r, 45) }
+  for (let r = 20; r < 52; r++) set(r, 37)
+  const ink = { cols: 100, rows: 100, cells }
+
+  it("snaps a loosely-estimated box onto the block's drawn outline", () => {
+    expect(snapBoxToInk([500, 280, 610, 470], ink)).toEqual([520, 300, 640, 460])
+  })
+
+  it("ignores a string attached to the block", () => {
+    expect(snapBoxToInk([530, 300, 640, 460], ink)[0]).toBe(520)
+  })
+
+  it("leaves a box alone where there's no drawn edge to snap to", () => {
+    expect(snapBoxToInk([50, 700, 150, 900], ink)).toEqual([50, 700, 150, 900])
+    expect(snapBoxToInk([500, 280, 610, 470], undefined)).toEqual([500, 280, 610, 470])
   })
 })
 

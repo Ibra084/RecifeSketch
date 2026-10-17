@@ -1,6 +1,7 @@
 import "server-only"
-import { createClient } from "@/lib/supabase/server"
+import { createAdminClient, createClient } from "@/lib/supabase/server"
 import { requireUser } from "@/lib/auth/session"
+import { removeBoardImages } from "./images"
 
 export interface WhiteboardSummary {
   id: string
@@ -55,6 +56,15 @@ export async function listWhiteboards(): Promise<WhiteboardSummary[]> {
     .limit(200)
   if (error) throw new Error(`listWhiteboards: ${error.message}`)
   return (data as Row[]).map(toSummary)
+}
+
+/** True if the signed-in student owns this board (a light check - no board contents are read). */
+export async function ownsWhiteboard(id: string): Promise<boolean> {
+  if (!isWhiteboardId(id)) return false
+  const user = await requireUser()
+  const supabase = await createClient()
+  const { data, error } = await supabase.from("whiteboards").select("id").eq("id", id).eq("user_id", user.id).maybeSingle()
+  return !error && Boolean(data)
 }
 
 /** The student's most recently edited board (for "Open whiteboard" CTAs), or null. */
@@ -124,6 +134,10 @@ export async function deleteWhiteboard(id: string): Promise<boolean> {
     .eq("user_id", user.id)
     .select("id")
   if (error) throw new Error(`deleteWhiteboard: ${error.message}`)
+  if (data.length > 0) {
+    // Its pasted images go with it (best effort: a leftover image is private and harmless).
+    await removeBoardImages(createAdminClient(), user.id, id).catch((err) => console.warn("[whiteboards] images not removed", err))
+  }
   return data.length > 0
 }
 

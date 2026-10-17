@@ -5,6 +5,7 @@ import { Tldraw, useValue, type Editor, type TLComponents } from "tldraw"
 import "tldraw/tldraw.css"
 import { attachBoardPersistence, type SavedBoard, type SaveStatus } from "./board-persistence"
 import { chooseStartingBoard, readBoardCache } from "./board-cache"
+import { boardAssetStore } from "./board-images"
 import { MathShapeUtil } from "@/lib/drawing/math-shape"
 import { GraphShapeUtil } from "@/lib/drawing/graph-shape"
 
@@ -71,6 +72,8 @@ export function WhiteboardSection(props: WhiteboardSectionProps) {
 
 function WhiteboardCanvas({ onEditorMount, board, onSaveStatus, hideStylePanel }: WhiteboardSectionProps) {
   const [editor, setEditor] = useState<Editor | null>(null)
+  // A saved board keeps pasted images in the student's storage folder, not inside its saved data.
+  const [assets] = useState(() => (board ? boardAssetStore(board.id) : undefined))
   // Read through refs so the mount callback stays stable for tldraw.
   const boardRef = useRef(board)
   const statusRef = useRef(onSaveStatus)
@@ -94,6 +97,7 @@ function WhiteboardCanvas({ onEditorMount, board, onSaveStatus, hideStylePanel }
     <div className="relative isolate z-0 h-full w-full bg-surface-subtle">
       <Tldraw
         persistenceKey={board ? undefined : "recife-sketch-board"}
+        assets={assets}
         shapeUtils={shapeUtils}
         components={hideStylePanel ? HIDDEN_STYLE_PANEL : DEFAULT_COMPONENTS}
         onMount={handleMount}

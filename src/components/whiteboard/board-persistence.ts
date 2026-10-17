@@ -1,5 +1,6 @@
 import { getSnapshot, loadSnapshot, type Editor, type TLStoreSnapshot } from "tldraw"
 import { writeBoardCache } from "./board-cache"
+import { createInlineImageMover } from "./board-images"
 
 export type SaveStatus = "saved" | "saving" | "unsaved" | "error"
 
@@ -99,8 +100,14 @@ export function attachBoardPersistence(
     }
   }
 
+  // Images embedded in the board (older boards, the attached question photo) move to storage,
+  // so the board's saved data stays small enough to save.
+  const moveInlineImages = createInlineImageMover(editor, board.id)
+  moveInlineImages()
+
   const stopListening = editor.store.listen(
-    () => {
+    (entry) => {
+      if (Object.values(entry.changes.added).some((record) => record.typeName === "asset")) moveInlineImages()
       revision++
       status("unsaved")
       window.clearTimeout(cacheTimer)

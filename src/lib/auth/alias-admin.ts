@@ -105,14 +105,27 @@ export async function resetAliasPassword(admin: SupabaseClient, rawAlias: string
   return { alias, password }
 }
 
-/** Deletes the alias account; its whiteboards go with it (ON DELETE CASCADE). */
+/** Deletes the alias account; its whiteboards go with it (ON DELETE CASCADE), and its stored images are removed. */
 export async function deleteAliasAccount(admin: SupabaseClient, rawAlias: string, aliasDomain: string) {
   const alias = parseAlias(rawAlias)
   const user = await findAliasUser(admin, alias, aliasDomain)
   if (!user) throw new AliasAdminError(`No student alias "${alias}".`)
+  await removeStoredImages(admin, user.id).catch(() => undefined)
   const { error } = await admin.auth.admin.deleteUser(user.id)
   if (error) throw new AliasAdminError(error.message)
   return { alias }
+}
+
+/** The student's whiteboard images (bucket and layout as in src/lib/whiteboards/images.ts). */
+async function removeStoredImages(admin: SupabaseClient, userId: string): Promise<void> {
+  const bucket = admin.storage.from("board-images")
+  const { data: boards } = await bucket.list(userId, { limit: 1000 })
+  for (const board of boards ?? []) {
+    const folder = `${userId}/${board.name}`
+    const { data: files } = await bucket.list(folder, { limit: 1000 })
+    const paths = (files ?? []).map((file) => `${folder}/${file.name}`)
+    if (paths.length > 0) await bucket.remove(paths)
+  }
 }
 
 /** Grants or removes the admin role on a personal (email) account. */

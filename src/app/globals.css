@@ -137,6 +137,114 @@
   animation: panel-in 180ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
+/* Auth + dashboard motion, carried over from RecifeAI/src/index.css
+   (fade-in 200ms, panel-in 200ms, page-in 240ms, .card-hover, .btn-press). */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.animate-fade-in {
+  animation: fade-in 200ms ease-out forwards;
+}
+
+@keyframes auth-card-in {
+  from { opacity: 0; transform: scale(0.96) translateY(-8px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+.animate-auth-card-in {
+  animation: auth-card-in 200ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes page-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-page-in {
+  animation: page-in 240ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.card-hover {
+  transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
+}
+.card-hover:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.07);
+  border-color: #e5e7eb;
+}
+
+.btn-press:active {
+  transform: scale(0.96);
+  transition: transform 80ms ease;
+}
+
+/* Landing page motion, carried over from RecifeAI/src/index.css
+   (float-slow, step-in, rise-in, progress-sweep, bar-fill, .hairline). */
+.hairline {
+  border-color: var(--border-subtle);
+}
+
+@keyframes float-slow {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-8px); }
+}
+.animate-float-slow {
+  animation: float-slow 6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+@keyframes step-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.99); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.animate-step-in {
+  animation: step-in 420ms var(--ease-premium) forwards;
+}
+
+@keyframes rise-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-rise-in {
+  animation: rise-in 380ms var(--ease-premium) forwards;
+  opacity: 0;
+}
+
+@keyframes progress-sweep {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+
+/* Whiteboard demo: strokes "draw" in, text "writes" in left to right. */
+@keyframes stroke-draw {
+  from { stroke-dashoffset: var(--len, 400); }
+  to { stroke-dashoffset: 0; }
+}
+.demo-stroke {
+  stroke-dasharray: var(--len, 400);
+  stroke-dashoffset: var(--len, 400);
+  animation: stroke-draw 700ms var(--ease-premium) forwards;
+}
+@keyframes write-in {
+  from { clip-path: inset(-20% 100% -20% 0); }
+  to { clip-path: inset(-20% -2% -20% 0); }
+}
+.demo-write {
+  clip-path: inset(-20% 100% -20% 0);
+  animation: write-in 800ms ease-out forwards;
+}
+.demo-fade {
+  opacity: 0;
+  animation: fade-in 300ms ease-out forwards;
+}
+
+/* Faint dotted "whiteboard" field behind the auth card: the one
+   product-specific touch on an otherwise plain white Recife page. */
+.auth-backdrop {
+  background-color: #ffffff;
+  background-image: radial-gradient(rgba(24, 24, 27, 0.07) 1px, transparent 1px);
+  background-size: 22px 22px;
+  background-position: -11px -11px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .animate-popover-in,
   .animate-panel-in {

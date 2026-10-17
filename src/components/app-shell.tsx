@@ -4,6 +4,8 @@ import dynamic from "next/dynamic"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Box, renderPlaintextFromRichText, useValue, type Editor, type TLShapeId } from "tldraw"
 import { RecifeWordmark } from "@/components/brand/recife-wordmark"
+import { BoardHeader } from "@/components/whiteboard/board-header"
+import type { SavedBoard, SaveStatus } from "@/components/whiteboard/board-persistence"
 import { AiCompanion, type CompanionState, type TutorSpeech } from "@/components/companion/ai-companion"
 import { readQuestionImageBlob } from "@/components/companion/question-image"
 import { useCompanionOrb } from "@/components/companion/use-companion-orb"
@@ -16,6 +18,7 @@ import { TldrawShapeAnimator } from "@/lib/drawing/playback/tldraw-animator"
 import type { DrawingSequence } from "@/lib/drawing/playback/types"
 import type { DrawingAction } from "@/lib/drawing/protocol"
 import { cameraMoveFor } from "@/lib/overlay/camera-follow"
+import { recognizeWords } from "@/lib/ocr/recognize-words"
 import { findUnattachedQuestionImage, markQuestionSourceAttached, placeQuestionSheet } from "@/lib/drawing/question-sheet"
 import { TldrawDrawingAdapter } from "@/lib/drawing/tldraw-adapter"
 import { pageRect, projectRect, type PageRect, type ViewportRect } from "@/lib/overlay/coordinates"
@@ -67,7 +70,13 @@ const FOLLOW_CAMERA_MS = 350
 
 type StepHandler = (sequence: DrawingSequence, stepIndex: number, text: string | undefined) => void
 
-export function AppShell() {
+interface AppShellProps {
+  /** A saved whiteboard (from the dashboard). Without one, the board persists locally only. */
+  board?: SavedBoard & { title: string }
+}
+
+export function AppShell({ board }: AppShellProps = {}) {
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>("saved")
   // The engine and animator live for the whiteboard's whole mounted
   // lifetime (not recreated per question), so object ids stay addressable
   // across turns - a fresh DrawingPlayer is created per `play()` call.
@@ -239,12 +248,13 @@ export function AppShell() {
 
   const [boardController] = useState<WhiteboardController>(() => ({
     isReady: () => engineRef.current !== null && animatorRef.current !== null,
-    play: async (sequence, stepCommentary, imageRegion) => {
+    play: async (sequence, stepCommentary, imageRegion, imageText) => {
       const engine = engineRef.current
       const animator = animatorRef.current
       if (!engine || !animator) throw new Error("Whiteboard not ready")
       adapterRef.current?.setImageRegion(imageRegion ?? null)
       adapterRef.current?.beginPlan()
+      adapterRef.current?.setImageText(imageText ?? null)
       window.clearTimeout(homeTimerRef.current)
       window.clearTimeout(closeTimerRef.current)
       setLesson({
@@ -360,6 +370,17 @@ export function AppShell() {
       if (!region || objects.length === 0) return undefined
       return { region: { x: region.x, y: region.y, w: Math.max(1, region.w), h: Math.max(1, region.h) }, objects }
     },
+    readImageText: async (region) => {
+      const editor = editorRef.current
+      if (!editor) return null
+      const area = new Box(region.x, region.y, region.w, region.h)
+      const ids = editor.getCurrentPageShapes().filter((shape) => editor.getShapePageBounds(shape)?.collides(area)).map((shape) => shape.id)
+      if (ids.length === 0) return null
+      // A sharp, larger render of exactly that area (no padding), so small print reads well and boxes map back exactly.
+      const scale = Math.min(3, 3000 / Math.max(region.w, region.h))
+      const { blob } = await editor.toImage(ids, { format: "png", background: true, bounds: area, padding: 0, scale })
+      return recognizeWords(blob)
+    },
     captureSelection: async () => {
       const editor = editorRef.current
       const ids = editor?.getSelectedShapeIds() ?? []
@@ -433,12 +454,16 @@ export function AppShell() {
 
   return (
     <div className="flex h-dvh w-full flex-col bg-surface-subtle">
-      <header className="flex h-12 shrink-0 items-center border-b border-border-subtle bg-surface px-4">
-        <RecifeWordmark />
-      </header>
+      {board ? (
+        <BoardHeader title={board.title} status={saveStatus} />
+      ) : (
+        <header className="flex h-12 shrink-0 items-center border-b border-border-subtle bg-surface px-4">
+          <RecifeWordmark />
+        </header>
+      )}
 
       <main ref={mainRef} className="relative flex-1 overflow-hidden">
-        <WhiteboardSection onEditorMount={handleEditorMount} />
+        <WhiteboardSection onEditorMount={handleEditorMount} board={board} onSaveStatus={setSaveStatus} />
         {mountedEditor && viewport && orb.position && (
           <AiCompanion
             position={orb.position}

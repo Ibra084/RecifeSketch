@@ -103,6 +103,34 @@ describe("handleTutorRequest", () => {
     expect(provider.requests).toEqual([{ question: "Why does it need AC?", context }])
   })
 
+  it("still answers when the board is zoomed far out (visible area bigger than the size limit)", async () => {
+    // The production failure: a 3%-zoom viewport is ~46,000 x 26,000 units wide... or wider, past the 50,000 limit.
+    const provider = new FakeAIProvider({ ok: true, plan: samplePlan(), usage: { approxInputTokens: 1, approxOutputTokens: 1, estimatedCostUsd: 0, measured: false } })
+    const context = {
+      objects: [{ id: "graph", kind: "graph", label: "graph: y=x^2", x: 120000, y: 0, w: 520, h: 380 }],
+      history: [],
+      layout: {
+        viewport: { x: -10000, y: -5000, w: 90000, h: 60000 },
+        occupied: [{ x: 0, y: 0, w: 70000, h: 10 }],
+        freshArea: { x: 200000, y: 0, w: 1000, h: 700 },
+      },
+    }
+    const response = await handleTutorRequest(makeRequest({ question: "Explain this graph", context }), openDeps(provider))
+    expect(response.status).toBe(200)
+    const sent = provider.requests[0].context!
+    expect(sent.layout!.viewport.w).toBe(50000) // clamped, not rejected
+    expect(sent.layout!.freshArea.x).toBe(100000)
+    expect(sent.objects[0].x).toBe(100000)
+  })
+
+  it("says exactly which part of a bad request was wrong", async () => {
+    const response = await handleTutorRequest(makeRequest({ question: 42 }), openDeps())
+    expect(response.status).toBe(400)
+    const json = await response.json()
+    expect(json.error.message).toMatch(/question/)
+    expect(json.error.message).not.toMatch(/<= 500 chars/)
+  })
+
   it("rejects a non-object body with 400", async () => {
     const response = await handleTutorRequest(makeRequest({ wrong: "field" }), openDeps())
     expect(response.status).toBe(400)

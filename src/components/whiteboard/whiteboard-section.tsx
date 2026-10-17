@@ -1,8 +1,9 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Tldraw, useValue, type Editor } from "tldraw"
 import "tldraw/tldraw.css"
+import { attachBoardPersistence, type SavedBoard, type SaveStatus } from "./board-persistence"
 import { MathShapeUtil } from "@/lib/drawing/math-shape"
 import { GraphShapeUtil } from "@/lib/drawing/graph-shape"
 
@@ -30,21 +31,36 @@ function WhiteboardEmptyHint({ editor }: { editor: Editor | null }) {
 interface WhiteboardSectionProps {
   /** Connects the AI drawing adapter to the same editor used by the native tldraw UI. */
   onEditorMount?: (editor: Editor) => void
+  /** A saved board to load and autosave to the server; without it the board persists locally. */
+  board?: SavedBoard
+  onSaveStatus?: (status: SaveStatus) => void
 }
 
-export function WhiteboardSection({ onEditorMount }: WhiteboardSectionProps) {
+export function WhiteboardSection({ onEditorMount, board, onSaveStatus }: WhiteboardSectionProps) {
   const [editor, setEditor] = useState<Editor | null>(null)
+  // Read through refs so the mount callback stays stable for tldraw.
+  const boardRef = useRef(board)
+  const statusRef = useRef(onSaveStatus)
+  useEffect(() => {
+    statusRef.current = onSaveStatus
+  }, [onSaveStatus])
 
   function handleMount(mounted: Editor) {
+    const saved = boardRef.current
+    // Load the saved board before the AI adapter attaches, so the tutor sees its objects.
+    const detach = saved
+      ? attachBoardPersistence(mounted, saved, (status) => statusRef.current?.(status))
+      : undefined
     setEditor(mounted)
     onEditorMount?.(mounted)
+    return detach
   }
 
   return (
     // Contain tldraw's internal UI layers so Recife's sibling overlays stay above its tools.
     <div className="relative isolate z-0 h-full w-full bg-surface-subtle">
       <Tldraw
-        persistenceKey="recife-sketch-board"
+        persistenceKey={board ? undefined : "recife-sketch-board"}
         shapeUtils={shapeUtils}
         onMount={handleMount}
         licenseKey={process.env.NEXT_PUBLIC_TLDRAW_LICENSE_KEY}

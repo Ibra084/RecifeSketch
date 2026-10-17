@@ -356,3 +356,34 @@ describe("forces by named direction on a slope", () => {
     expect(result.error?.message).toMatch(/draw_on_incline/)
   })
 })
+
+describe("copy_figure", () => {
+  it("lets forces attach to a copied figure's named parts, with slope directions for a part on a slope", () => {
+    const adapter = new FakeDrawingAdapter()
+    const result = new DrawingEngine(adapter).run([
+      { type: "copy_figure", id: "fig", box: [300, 50, 900, 450], position: { x: 900, y: 0 },
+        parts: [{ id: "blockA", box: [500, 100, 560, 200], slope: { angle: 30, downhill: "left" } }, { id: "massB", box: [600, 380, 700, 440] }] },
+      { type: "draw_force", id: "fA", on: "blockA", direction: "up_slope" },
+      { type: "draw_force", id: "tB", on: "massB", direction: "up" },
+    ])
+    expect(result.ok).toBe(true)
+    const up = result.executed[1].action
+    if (up.type !== "draw_arrow") throw new Error("expected an arrow")
+    expect(up.end.x - up.start.x).toBeGreaterThan(0) // up a slope going downhill to the left: rightwards...
+    expect(up.end.y - up.start.y).toBeLessThan(0) // ...and up
+  })
+})
+
+describe("connected mechanisms", () => {
+  it("runs a pulley, two hanging masses and the string between them", () => {
+    const adapter = new FakeDrawingAdapter()
+    const result = new DrawingEngine(adapter).run([
+      { type: "draw_pulley", id: "P", centre: { x: 300, y: 100 } },
+      { type: "draw_mass", id: "A", hang: { pulley: "P", side: "left" }, label: "3 kg" },
+      { type: "draw_mass", id: "B", hang: { pulley: "P", side: "right" }, label: "2 kg" },
+      { type: "draw_string", id: "s", from: "A", to: "B", over: "P" },
+    ])
+    expect(result.ok).toBe(true)
+    expect(adapter.calls.map((c) => c.method)).toEqual(["drawPulley", "drawMass", "drawMass", "drawString"])
+  })
+})

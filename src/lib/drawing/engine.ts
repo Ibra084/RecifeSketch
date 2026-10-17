@@ -63,6 +63,10 @@ const CREATING_TYPES = new Set<DrawingAction["type"]>([
   "draw_graph",
   "mark_image",
   "highlight_text",
+  "copy_figure",
+  "draw_pulley",
+  "draw_mass",
+  "draw_string",
   "draw_apparatus",
   "draw_incline",
   "draw_on_incline",
@@ -127,6 +131,18 @@ export class DrawingEngine {
         return action
       case "highlight_text":
         this.adapter.highlightText(action)
+        return action
+      case "copy_figure":
+        this.adapter.copyFigure(action)
+        return action
+      case "draw_pulley":
+        this.adapter.drawPulley(action)
+        return action
+      case "draw_mass":
+        this.adapter.drawMass(action)
+        return action
+      case "draw_string":
+        this.adapter.drawString(action)
         return action
       case "draw_apparatus":
         this.adapter.drawApparatus(action)

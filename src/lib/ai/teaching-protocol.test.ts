@@ -252,3 +252,15 @@ describe("visualPlanIssue", () => {
     expect(visualPlanIssue(diagram, "What forces act on a block resting on a table?")).toBeNull()
   })
 })
+
+describe("copied figure parts", () => {
+  it("keeps part ids unique and points later actions at the renamed part", () => {
+    const plan = teachingPlanSchema.parse({ concept: "pulleys", level: "ks4", steps: [{ commentary: "Copy the figure.", actions: [
+      { type: "copy_figure", id: "fig", box: [0, 0, 500, 500], position: { x: 0, y: 0 }, parts: [{ id: "A", box: [10, 10, 50, 50] }] },
+      { type: "draw_force", id: "T", on: "A", direction: "up" },
+    ] }] })
+    const [copy, force] = resolveTeachingPlanIds(plan, ["A"]).steps[0].actions
+    expect(copy).toMatchObject({ parts: [{ id: "A-2" }] })
+    expect(force).toMatchObject({ on: "A-2" })
+  })
+})

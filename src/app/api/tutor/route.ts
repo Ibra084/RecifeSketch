@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server"
 import { z } from "zod"
 import { loadAIConfig, isAIConfigured } from "@/lib/ai/config"
-import { existingIdsFrom, tutorContextSchema } from "@/lib/ai/context"
+import { existingIdsFrom, sanitizeTutorContext, tutorContextSchema } from "@/lib/ai/context"
 import { GeminiProvider } from "@/lib/ai/gemini-provider"
-import { MAX_QUESTION_LENGTH, runTeachingPipeline, type TeachingPipelineFailure } from "@/lib/ai/pipeline"
+import { runTeachingPipeline, type TeachingPipelineFailure } from "@/lib/ai/pipeline"
 import type { AIProvider } from "@/lib/ai/provider"
 import { createRateLimiter, type RateLimiter } from "@/lib/ai/rate-limiter"
 import { protectEarlierWork, resolveTeachingPlanIds } from "@/lib/ai/teaching-protocol"
@@ -25,7 +25,8 @@ const MAX_BODY_BYTES = 2_800_000
 
 const requestSchema = z.strictObject({
   question: z.string(),
-  context: tutorContextSchema.optional(),
+  // Checked leniently below: board context must never stop a question being answered.
+  context: z.unknown().optional(),
   source: questionSourceSchema.optional(),
 })
 
@@ -88,16 +89,21 @@ export async function handleTutorRequest(request: Request, deps: TutorRouteDeps)
 
   const parsedBody = requestSchema.safeParse(bodyJson)
   if (!parsedBody.success) {
+    // Say exactly which part was wrong (and log it), rather than a generic message that hides the cause.
+    const issue = parsedBody.error.issues[0]
+    const where = issue?.path.length ? issue.path.join(".") : "request"
+    console.warn("[tutor] rejected request:", where, issue?.message)
     return NextResponse.json(
-      {
-        ok: false,
-        error: { code: "invalid_request", message: `Expected { question: string (<= ${MAX_QUESTION_LENGTH} chars) }.` },
-      },
+      { ok: false, error: { code: "invalid_request", message: `The question couldn't be sent (${where}: ${issue?.message ?? "invalid"}). Please try again.` } },
       { status: 400 }
     )
   }
 
-  const context = parsedBody.data.context
+  const context = sanitizeTutorContext(parsedBody.data.context)
+  const strictContext = parsedBody.data.context === undefined ? null : tutorContextSchema.safeParse(parsedBody.data.context)
+  if (strictContext && !strictContext.success) {
+    console.warn("[tutor] board context was out of range and has been tidied:", strictContext.error.issues[0]?.path.join("."), strictContext.error.issues[0]?.message)
+  }
   const result = await runTeachingPipeline({
     question: parsedBody.data.question,
     source: parsedBody.data.source,

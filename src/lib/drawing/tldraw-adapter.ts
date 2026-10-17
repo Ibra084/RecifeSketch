@@ -788,7 +788,13 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
       throw new Error("Couldn't find the question photo on the board to copy the figure from. Draw the diagram instead.")
     }
     const at = this.followPlanShift(action.position)
-    const size = copySize(area, action.width)
+    // How many real pixels the figure has in the photo, so the copy isn't enlarged past the point of blur.
+    const asset = this.editor.getAsset(source.props.assetId)
+    const shownFraction = source.props.crop ? source.props.crop.bottomRight.x - source.props.crop.topLeft.x : 1
+    const nativeWidth = asset?.type === "image" && asset.props.w > 0
+      ? (area.w / photo.bounds.w) * asset.props.w * shownFraction
+      : undefined
+    const size = copySize(area, action.width, nativeWidth)
     const tlId = this.track(action.id, "image", "shape", `figure copied from the question${action.label ? ` (${action.label})` : ""}`)
     this.editor.createShapes([{
       id: tlId, type: "image", x: at.x, y: at.y,

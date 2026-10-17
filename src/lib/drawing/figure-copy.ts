@@ -37,9 +37,17 @@ export function partOnCopy(part: Rect, original: Rect, copy: Rect): Rect {
   return { x: copy.x + (part.x - original.x) * sx, y: copy.y + (part.y - original.y) * sy, w: part.w * sx, h: part.h * sy }
 }
 
-/** How big to show the copy: enlarged so it's easy to annotate, within sensible bounds, keeping its shape. */
-export function copySize(original: Rect, width?: number): { w: number; h: number } {
-  const w = width ?? Math.min(700, Math.max(360, original.w * 1.6))
+/** A copy is never shown bigger than this many times its real pixels in the photo - beyond that it's just blur. */
+const MAX_UPSCALE = 2
+
+/**
+ * How big to show the copy: enlarged so it's easy to annotate, within
+ * sensible bounds, keeping its shape - but never more than twice the figure's
+ * real pixel width (`nativeWidth`), so a small photo isn't blown up into a blur.
+ */
+export function copySize(original: Rect, width?: number, nativeWidth?: number): { w: number; h: number } {
+  let w = width ?? Math.min(700, Math.max(360, original.w * 1.6))
+  if (nativeWidth !== undefined && nativeWidth > 0) w = Math.min(w, Math.max(120, nativeWidth * MAX_UPSCALE))
   return { w, h: (w * original.h) / original.w }
 }
 
@@ -93,8 +101,63 @@ export function figureCrop(box: BoxIn, parts: readonly BoxIn[], ocr?: OcrWords &
     // A real figure is never mostly sentences: if trimming took most of it, the trim was wrong.
     crop = boxArea(trimmed) >= 0.5 * boxArea(box) ? trimmed : crop
     crop = tightenToInk(crop, ocr.ink)
+    if (ocr.ink) crop = extendPastInk(crop, ocr.ink, proseLines(ocr))
   }
   return protect ? unionOf([crop, protect])! : crop
+}
+
+/** The question's sentences (OCR lines of 4+ words spanning a third of the image), as [ymin, xmin, ymax, xmax] on 0-1000. */
+function proseLines(ocr: OcrWords): ImageBox[] {
+  const lines = new Map<number, ImageBox>()
+  const counts = new Map<number, number>()
+  for (const w of ocr.words) {
+    const r: ImageBox = [(w.y0 / ocr.height) * 1000, (w.x0 / ocr.width) * 1000, (w.y1 / ocr.height) * 1000, (w.x1 / ocr.width) * 1000]
+    const l = lines.get(w.line)
+    lines.set(w.line, l ? [Math.min(l[0], r[0]), Math.min(l[1], r[1]), Math.max(l[2], r[2]), Math.max(l[3], r[3])] : r)
+    counts.set(w.line, (counts.get(w.line) ?? 0) + 1)
+  }
+  return [...lines.entries()].filter(([line, b]) => (counts.get(line) ?? 0) >= 4 && b[3] - b[1] >= 333).map(([, b]) => b)
+}
+
+/**
+ * Never cuts a drawn object in half: while a line of ink continues across an
+ * edge of the crop (a mass's outline, a string, a slope), that edge moves
+ * outward, until it reaches blank paper. Bounded (half the crop's size per
+ * side) and never into the question's sentences, so it can't run away across
+ * the page. Boxes are [ymin, xmin, ymax, xmax] on 0-1000.
+ */
+export function extendPastInk(box: BoxIn, ink: InkGrid, prose: readonly BoxIn[] = [], margin = 10): ImageBox {
+  const cw = 1000 / ink.cols, ch = 1000 / ink.rows
+  const inProse = (r: number, c: number) => {
+    const y = (r + 0.5) * ch, x = (c + 0.5) * cw
+    return prose.some((p) => y >= p[0] && y <= p[2] && x >= p[1] && x <= p[3])
+  }
+  const at = (r: number, c: number) =>
+    r >= 0 && c >= 0 && r < ink.rows && c < ink.cols && Boolean(ink.cells[r * ink.cols + c]) && !inProse(r, c)
+  let r0 = Math.max(0, Math.floor(box[0] / ch)), c0 = Math.max(0, Math.floor(box[1] / cw))
+  let r1 = Math.min(ink.rows - 1, Math.ceil(box[2] / ch) - 1), c1 = Math.min(ink.cols - 1, Math.ceil(box[3] / cw) - 1)
+  const growR = Math.ceil((r1 - r0 + 1) * 0.5), growC = Math.ceil((c1 - c0 + 1) * 0.5)
+  /** Ink on the edge row/column that carries on into the next one out (allowing a one-cell diagonal step). */
+  const rowContinues = (edge: number, next: number) => {
+    for (let c = c0; c <= c1; c++) if (at(edge, c) && (at(next, c - 1) || at(next, c) || at(next, c + 1))) return true
+    return false
+  }
+  const colContinues = (edge: number, next: number) => {
+    for (let r = r0; r <= r1; r++) if (at(r, edge) && (at(r - 1, next) || at(r, next) || at(r + 1, next))) return true
+    return false
+  }
+  const moved = { top: false, bottom: false, left: false, right: false }
+  for (let n = 0; n < growR && r1 + 1 < ink.rows && rowContinues(r1, r1 + 1); n++) { r1++; moved.bottom = true }
+  for (let n = 0; n < growR && r0 > 0 && rowContinues(r0, r0 - 1); n++) { r0--; moved.top = true }
+  for (let n = 0; n < growC && c1 + 1 < ink.cols && colContinues(c1, c1 + 1); n++) { c1++; moved.right = true }
+  for (let n = 0; n < growC && c0 > 0 && colContinues(c0, c0 - 1); n++) { c0--; moved.left = true }
+  // Edges that moved get a little breathing room; the others keep exactly what they had.
+  return [
+    moved.top ? Math.max(0, r0 * ch - margin) : box[0],
+    moved.left ? Math.max(0, c0 * cw - margin) : box[1],
+    moved.bottom ? Math.min(1000, (r1 + 1) * ch + margin) : box[2],
+    moved.right ? Math.min(1000, (c1 + 1) * cw + margin) : box[3],
+  ]
 }
 
 /**

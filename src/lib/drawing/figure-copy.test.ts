@@ -120,6 +120,39 @@ describe("figureCrop (bug: lift diagram beside its text was cut to a sliver)", (
   })
 })
 
+describe("figureCrop never cuts a drawn object in half (bug: pulley masses sliced off at the bottom)", () => {
+  // 100x100 ink grid (one cell = 10 units): a pulley wheel at rows 10-25, strings down cols 30 and 60,
+  // and two circular masses at rows 70-85 hanging on them. The model's box stops at row 78 - mid-mass.
+  const cells = new Uint8Array(100 * 100)
+  const set = (r: number, c: number) => (cells[r * 100 + c] = 1)
+  for (let c = 30; c <= 60; c++) { set(10, c); set(25, c) }
+  for (let r = 25; r < 70; r++) { set(r, 30); set(r, 60) }
+  for (const [c0, c1] of [[22, 38], [52, 68]]) for (let r = 70; r <= 85; r++) for (let c = c0; c <= c1; c++) if (r === 70 || r === 85 || c === c0 || c === c1) set(r, c)
+  const ocr = { width: 1000, height: 1000, words: [], ink: { cols: 100, rows: 100, cells } }
+
+  it("pushes the bottom edge past both masses onto blank paper", () => {
+    const [, , bottom] = figureCrop([80, 200, 780, 700], [], ocr)
+    expect(bottom).toBeGreaterThanOrEqual(860)
+  })
+
+  it("leaves an edge that already sits on blank paper where it is (plus its margin)", () => {
+    const [top, left, , right] = figureCrop([80, 200, 780, 700], [], ocr)
+    expect(top).toBeLessThanOrEqual(100)
+    expect(left).toBeLessThanOrEqual(220)
+    expect(right).toBeGreaterThanOrEqual(690)
+  })
+})
+
+describe("copySize never blows a small photo up into a blur", () => {
+  it("caps the copy at twice the figure's real pixels", () => {
+    // A 300-unit-wide figure that is only 120 real pixels wide in the photo.
+    expect(copySize({ x: 0, y: 0, w: 300, h: 150 }, undefined, 120).w).toBe(240)
+  })
+  it("still enlarges a sharp figure for annotating", () => {
+    expect(copySize({ x: 0, y: 0, w: 300, h: 150 }, undefined, 900).w).toBe(480)
+  })
+})
+
 describe("snapBoxToInk", () => {
   // A 100x100 ink grid over the image (one cell = 10 units on the 0-1000 scale):
   // a block outlined at rows 52-63, cols 30-45, with a string rising from its top.

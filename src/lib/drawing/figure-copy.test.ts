@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest"
-import { copySize, cropFor, figureCrop, overlapArea, partOnCopy, snapBoxToInk, tightenToInk, tiltedRectIn, trimProseFromFigure } from "./figure-copy"
+import {
+  copySize, cropFor, expandBox, figureCrop, fromCropSpace, overlapArea, partOnCopy, snapBoxToInk, tightenToInk, tiltedRectIn,
+  toCropSpace, trimProseFromFigure,
+} from "./figure-copy"
 
 // The question photo shown at (100, 100), 800 x 400 on the board; its figure is the lower-left area.
 const shown = { x: 100, y: 100, w: 800, h: 400 }
@@ -150,6 +153,19 @@ describe("copySize never blows a small photo up into a blur", () => {
   })
   it("still enlarges a sharp figure for annotating", () => {
     expect(copySize({ x: 0, y: 0, w: 300, h: 150 }, undefined, 900).w).toBe(480)
+  })
+})
+
+describe("crop-space mapping for the second look", () => {
+  it("round-trips a part box through the figure crop", () => {
+    const crop = expandBox([200, 100, 600, 500], 0.1) // [160, 60, 640, 540]
+    expect(crop).toEqual([160, 60, 640, 540])
+    const part = [400, 200, 500, 300] as const
+    const inCrop = toCropSpace(part, crop)
+    fromCropSpace(inCrop, crop).forEach((v, i) => expect(v).toBeCloseTo(part[i], 6))
+  })
+  it("keeps the expanded crop inside the image", () => {
+    expect(expandBox([10, 950, 300, 1000], 0.2)).toEqual([0, 940, 358, 1000])
   })
 })
 

@@ -280,6 +280,26 @@ export function tightenToInk(
   ]
 }
 
+/** A box grown by `fraction` of its size on every side, kept within the image. Boxes are [ymin, xmin, ymax, xmax], 0-1000. */
+export function expandBox(box: BoxIn, fraction: number): ImageBox {
+  const dy = (box[2] - box[0]) * fraction, dx = (box[3] - box[1]) * fraction
+  return [Math.max(0, box[0] - dy), Math.max(0, box[1] - dx), Math.min(1000, box[2] + dy), Math.min(1000, box[3] + dx)]
+}
+
+/** A box in the whole image, expressed in a crop of it (both 0-1000 of their own image). */
+export function toCropSpace(box: BoxIn, crop: BoxIn): ImageBox {
+  const h = crop[2] - crop[0], w = crop[3] - crop[1]
+  const y = (v: number) => Math.min(1000, Math.max(0, ((v - crop[0]) / h) * 1000))
+  const x = (v: number) => Math.min(1000, Math.max(0, ((v - crop[1]) / w) * 1000))
+  return [y(box[0]), x(box[1]), y(box[2]), x(box[3])]
+}
+
+/** A box found in a crop, expressed back in the whole image. */
+export function fromCropSpace(box: BoxIn, crop: BoxIn): ImageBox {
+  const h = crop[2] - crop[0], w = crop[3] - crop[1]
+  return [crop[0] + (box[0] / 1000) * h, crop[1] + (box[1] / 1000) * w, crop[0] + (box[2] / 1000) * h, crop[1] + (box[3] / 1000) * w]
+}
+
 /** Overlap area of two rects (0 if they don't overlap). */
 export function overlapArea(a: Rect, b: Rect): number {
   const w = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)

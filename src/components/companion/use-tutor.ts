@@ -11,6 +11,7 @@ import type { UsageEstimate } from "@/lib/ai/usage-tracker"
 import type { PlaybackSnapshot } from "@/lib/drawing/playback/types"
 import type { TrackedObjectSummary } from "@/lib/drawing/tldraw-adapter"
 import type { OcrResult } from "@/lib/drawing/text-match"
+import { refineCopiedFigure } from "./second-look"
 
 export type TutorPhase = "idle" | "thinking" | "drawing"
 
@@ -218,7 +219,17 @@ export function useTutor(board: WhiteboardController) {
         return
       }
 
-      const plan = json.plan
+      // A copied figure gets one zoomed-in second look, so forces and labels land exactly on its parts.
+      // Stop still works while it runs; if it fails, the lesson goes ahead with the first guesses.
+      const lookController = new AbortController()
+      requestRef.current = lookController
+      const plan = await refineCopiedFigure(json.plan, source?.image, lookController.signal)
+      requestRef.current = null
+      if (lookController.signal.aborted) {
+        setPhaseBoth("idle")
+        say("Stopped. Ask again whenever you're ready.")
+        return
+      }
       const commentary = plan.steps.map((step) => step.commentary)
       setSuggestions(plan.followUps ?? [])
       setPhaseBoth("drawing")

@@ -1,6 +1,7 @@
 import type { AIConfig } from "./config"
 import { buildRepairPrompt, buildTeachingPrompt } from "./prompt"
-import type { AIProvider, TeachingPlanFailure, TeachingPlanRequest, TeachingPlanResult } from "./provider"
+import type { AIProvider, LocatePartsRequest, LocatePartsResult, TeachingPlanFailure, TeachingPlanRequest, TeachingPlanResult } from "./provider"
+import { buildLocatePrompt, LOCATE_MAX_OUTPUT_TOKENS, LOCATE_TIMEOUT_MS, parseLocateResponse } from "./locate-parts"
 import { isTransientFailure, MAX_TRANSIENT_RETRIES, TRANSIENT_RETRY_DELAY_MS } from "./retry"
 import { parseTeachingPlanResponse } from "./response-parser"
 import { estimateUsage, usageFromMeasuredTokens, type UsageEstimate } from "./usage-tracker"
@@ -116,6 +117,32 @@ export class GeminiProvider implements AIProvider {
     }
 
     return { ok: false, failure: { kind: "invalid_output", detail: "exhausted retries" } }
+  }
+
+  /**
+   * The zoomed-in second look at a copied figure. Kept deliberately cheap:
+   * one small image, a short prompt, minimal thinking, a short JSON answer,
+   * a single attempt with no repair loop, and a short deadline - if it fails,
+   * the lesson simply keeps the first guesses.
+   */
+  async locateParts(request: LocatePartsRequest, signal?: AbortSignal): Promise<LocatePartsResult> {
+    const apiKey = this.options.config.gemini.apiKey
+    if (!apiKey) return { ok: false, failure: { kind: "missing_api_key" } }
+    const prompt = buildLocatePrompt(request.parts)
+    const result = await this.callGemini({
+      apiKey,
+      model: this.options.config.gemini.model,
+      prompt,
+      maxOutputTokens: LOCATE_MAX_OUTPUT_TOKENS,
+      deadline: Date.now() + LOCATE_TIMEOUT_MS,
+      signal,
+      images: [request.image],
+      thinkingLevel: "minimal",
+    })
+    if (!result.ok) return result
+    const parsed = parseLocateResponse(result.text, request.parts.map((p) => p.id))
+    if (!parsed) return { ok: false, failure: { kind: "invalid_output", detail: "locate: unreadable answer" } }
+    return { ok: true, ...parsed, usage: result.usage }
   }
 
   /**

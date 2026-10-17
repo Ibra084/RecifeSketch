@@ -21,7 +21,8 @@ import { questionSourceSchema } from "@/lib/ai/question-source"
 // A raw request body bigger than this is rejected before it is even
 // JSON-parsed, independent of the (much smaller) question-length cap the
 // pipeline enforces afterwards.
-const MAX_BODY_BYTES = 2_800_000
+// Room for the full-detail question image plus a picture of the student's working.
+const MAX_BODY_BYTES = 7_000_000
 
 const requestSchema = z.strictObject({
   question: z.string(),
@@ -126,6 +127,8 @@ export async function handleTutorRequest(request: Request, deps: TutorRouteDeps)
     )
   }
 
+  // What each answer costs, so token use can be watched (counts as reported by the provider when available).
+  console.info(`[tutor] answered: ~${result.usage.approxInputTokens} input + ${result.usage.approxOutputTokens} output tokens`)
   const existingIds = existingIdsFrom(context)
   // Earlier work (e.g. a previous graph) is never deleted unless the student asked for that.
   const resolvedPlan = protectEarlierWork(resolveTeachingPlanIds(result.plan, existingIds), existingIds, parsedBody.data.question)

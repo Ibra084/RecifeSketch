@@ -39,6 +39,26 @@ export interface TeachingPlanRequest {
   context?: TutorContext
 }
 
+/** A box in an image: [ymin, xmin, ymax, xmax] on a 0-1000 scale of that image. */
+export type ImageBox = [number, number, number, number]
+
+/**
+ * The "second look" at a copied figure: the figure alone (cropped from the
+ * question), and the parts the lesson attaches things to. Returns each part's
+ * tight box in THAT cropped image - far more precise than locating them in the
+ * whole question, where the figure is only a small part of the picture.
+ */
+export interface LocatePartsRequest {
+  image: NonNullable<QuestionSource["image"]>
+  parts: { id: string; guess?: ImageBox }[]
+}
+
+export type LocatePartsResult =
+  | { ok: true; figure?: ImageBox; parts: { id: string; box: ImageBox }[]; usage: UsageEstimate }
+  | { ok: false; failure: TeachingPlanFailure }
+
 export interface AIProvider {
   generateTeachingPlan(request: TeachingPlanRequest, signal?: AbortSignal): Promise<TeachingPlanResult>
+  /** Optional: providers that can't do it simply leave the first guesses in place. */
+  locateParts?(request: LocatePartsRequest, signal?: AbortSignal): Promise<LocatePartsResult>
 }

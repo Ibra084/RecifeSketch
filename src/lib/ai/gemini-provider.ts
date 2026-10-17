@@ -90,7 +90,8 @@ export class GeminiProvider implements AIProvider {
         maxOutputTokens: config.maxOutputTokens,
         deadline,
         signal,
-        image: request.source?.image,
+        // The question first (every box refers to it), then the student's working, if any.
+        images: [request.source?.image, request.source?.work?.image].filter((image) => image !== undefined),
       })
       if (!callResult.ok) return callResult
 
@@ -154,8 +155,11 @@ export class GeminiProvider implements AIProvider {
     /** Epoch ms by which this call must finish (shared across retries). */
     deadline: number
     signal?: AbortSignal
-    image?: QuestionSource["image"]
+    images?: NonNullable<QuestionSource["image"]>[]
+    /** Defaults to the teaching-plan settings; the parts locator asks for less thinking. */
+    thinkingLevel?: "minimal" | "low" | "high"
   }): Promise<GeminiCallResult> {
+    const images = args.images ?? []
     const remainingMs = args.deadline - Date.now()
     if (remainingMs <= 0) return { ok: false, failure: { kind: "timeout" } }
     const fetchImpl = this.options.fetchImpl ?? fetch
@@ -172,16 +176,18 @@ export class GeminiProvider implements AIProvider {
         body: JSON.stringify({
           contents: [{ role: "user", parts: [
             { text: args.prompt },
-            ...(args.image ? [{ inlineData: { mimeType: args.image.mimeType, data: args.image.data } }] : []),
+            ...images.map((image) => ({ inlineData: { mimeType: image.mimeType, data: image.data } })),
           ] }],
           generationConfig: {
             maxOutputTokens: args.maxOutputTokens,
             temperature: 0.4,
             responseMimeType: "application/json",
+            // Read images in full detail: locating a diagram's parts needs it. (Text-only requests pay nothing extra.)
+            ...(images.length > 0 ? { mediaResolution: "MEDIA_RESOLUTION_HIGH" } : {}),
             // Gemini 3 uses thinkingLevel. Other configured model families
             // retain their provider defaults rather than receiving an invalid budget.
             ...(/^gemini-3[.-]/.test(args.model) ? {
-              thinkingConfig: { thinkingLevel: this.options.config.gemini.thinkingLevel ?? "low" },
+              thinkingConfig: { thinkingLevel: args.thinkingLevel ?? this.options.config.gemini.thinkingLevel ?? "low" },
             } : {}),
           },
         }),

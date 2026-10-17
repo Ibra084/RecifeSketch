@@ -44,8 +44,11 @@ export interface WhiteboardController {
   questionBounds(id: TLShapeId): QuestionSource["region"]
   findUnattachedQuestionImage(): TLShapeId | undefined
   exportQuestionImage(id: TLShapeId): Promise<QuestionSource["image"]>
-  /** Snapshot of the student's own work (plus `alsoInclude`), or undefined if there is none. */
-  captureStudentWork(alsoInclude: TLShapeId[]): Promise<QuestionSource | undefined>
+  /**
+   * Snapshot of the student's own work (plus `alsoInclude`), or undefined if there is none.
+   * "full": it's what the question is about; "context": a cheaper picture shown beside the question.
+   */
+  captureStudentWork(alsoInclude: TLShapeId[], detail: "full" | "context"): Promise<QuestionSource | undefined>
   /** What the student has selected on the board, if anything - the thing their question is about. */
   getSelection(): TutorContext["selection"]
   /** A picture of exactly the selected area, for the tutor to look at. */
@@ -128,10 +131,12 @@ export function useTutor(board: WhiteboardController) {
           say("Couldn't place the question on the board. Please try again.", "error")
           return
         }
-      } else if (!sourceRef.current) {
-        // The chain's question image from before a reload, re-read from the board; else one pasted straight onto the canvas.
-        const knownId = sourceIdRef.current && board.questionBounds(sourceIdRef.current) ? sourceIdRef.current : undefined
-        const imageId = knownId ?? board.findUnattachedQuestionImage()
+      } else {
+        // A photo pasted onto the board since the last question is the new question (never lumped in with
+        // the student's work); otherwise the chain's question image, re-read from the board after a reload.
+        const pasted = board.findUnattachedQuestionImage()
+        const knownId = !sourceRef.current && sourceIdRef.current && board.questionBounds(sourceIdRef.current) ? sourceIdRef.current : undefined
+        const imageId = pasted ?? knownId
         if (imageId) {
           try {
             const image = await board.exportQuestionImage(imageId)
@@ -139,7 +144,7 @@ export function useTutor(board: WhiteboardController) {
             sourceIdRef.current = imageId
             setHasQuestionSource(true)
           } catch {
-            // Fall through: the student-work snapshot below may still cover it.
+            // Fall through: the previous question (or the student-work snapshot) still applies.
           }
         }
       }
@@ -151,16 +156,27 @@ export function useTutor(board: WhiteboardController) {
       const selection = board.getSelection()
       let source: QuestionSource | undefined
       try {
-        source = selection
-          ? await board.captureSelection()
-          // Otherwise the student's own handwriting/sketches take priority: that's what "where did I go wrong?" is about.
-          : await board.captureStudentWork(stored ? [stored.id] : [])
+        if (selection) {
+          source = await board.captureSelection()
+        } else if (stored) {
+          // The question image itself, in full detail, is what every mark refers to. The student's own
+          // working beside it (if any) goes along as a second, cheaper picture for context.
+          const region = board.questionBounds(stored.id)
+          if (region) {
+            const work = await board.captureStudentWork([], "context").catch(() => undefined)
+            source = {
+              ...stored.source,
+              region,
+              ...(work?.image && work.region ? { work: { image: work.image, region: work.region } } : {}),
+              ...(work?.shapes ? { shapes: work.shapes } : {}),
+            }
+          }
+        } else {
+          // No question image: the student's own handwriting/sketches are what "where did I go wrong?" is about.
+          source = await board.captureStudentWork([], "full")
+        }
       } catch {
         source = undefined
-      }
-      if (!source && stored) {
-        const region = board.questionBounds(stored.id)
-        if (region) source = { ...stored.source, region }
       }
 
       // Read the image's printed words (OCR) while the tutor thinks: exact keyword highlights and figure crops use them.

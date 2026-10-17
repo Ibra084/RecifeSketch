@@ -8,7 +8,7 @@ import { BoardHeader } from "@/components/whiteboard/board-header"
 import type { SavedBoard, SaveStatus } from "@/components/whiteboard/board-persistence"
 import { useDeviceFlag } from "@/components/whiteboard/use-device-flag"
 import { AiCompanion, type CompanionState, type TutorSpeech } from "@/components/companion/ai-companion"
-import { readQuestionImageBlob } from "@/components/companion/question-image"
+import { CONTEXT_IMAGE, QUESTION_IMAGE, readImageUrl, readQuestionImageBlob } from "@/components/companion/question-image"
 import { useCompanionOrb } from "@/components/companion/use-companion-orb"
 import { useTutor, type WhiteboardController } from "@/components/companion/use-tutor"
 import { actionFocusRect } from "@/lib/drawing/action-focus-point"
@@ -39,6 +39,11 @@ const WhiteboardSection = dynamic(
     ),
   }
 )
+
+/** Render scale that gives an exported area about `maxSide` pixels on its long side (never absurdly large or small). */
+function exportPixelRatio(bounds: { w: number; h: number }, maxSide: number): number {
+  return Math.min(4, Math.max(0.25, maxSide / Math.max(1, bounds.w, bounds.h)))
+}
 
 /**
  * What a new lesson must not draw over: everything on the board except what
@@ -357,9 +362,19 @@ export function AppShell({ board }: AppShellProps = {}) {
     exportQuestionImage: async (id) => {
       const editor = editorRef.current
       if (!editor) throw new Error("Whiteboard not ready")
-      // No padding: the image must cover exactly the shape's bounds, or the AI's marks on it land shifted.
-      const { blob } = await editor.toImage([id], { format: "jpeg", quality: 0.85, background: true, padding: 0 })
-      const image = await readQuestionImageBlob(blob)
+      const shape = editor.getShape(id)
+      let image: Awaited<ReturnType<typeof readQuestionImageBlob>>
+      if (shape?.type === "image" && shape.props.assetId) {
+        // The photo's own file, at its own resolution (with the shape's crop) - never a re-render of the
+        // board, which would be limited to its on-screen size. Same extent as the shape, so marks map exactly.
+        const url = await editor.resolveAssetUrl(shape.props.assetId, { shouldResolveToOriginal: true })
+        if (!url) throw new Error("Couldn't read the question image")
+        image = await readImageUrl(url, { ...QUESTION_IMAGE, crop: shape.props.crop ?? null })
+      } else {
+        // No padding: the image must cover exactly the shape's bounds, or the AI's marks on it land shifted.
+        const { blob } = await editor.toImage([id], { format: "png", background: true, padding: 0, pixelRatio: 2 })
+        image = await readQuestionImageBlob(blob)
+      }
       markQuestionSourceAttached(editor, id)
       return image
     },
@@ -410,17 +425,19 @@ export function AppShell({ board }: AppShellProps = {}) {
       const ids = editor?.getSelectedShapeIds() ?? []
       const bounds = editor?.getSelectionPageBounds()
       if (!editor || ids.length === 0 || !bounds) return undefined
-      // Exactly the selected area, no padding, so marks the tutor places on this image land precisely.
+      // Exactly the selected area, no padding, so marks the tutor places on this image land precisely -
+      // rendered sharp (about 2048px on its long side), not at whatever size it happens to be on screen.
       const { blob } = await editor.toImage([...ids], {
-        format: "jpeg", quality: 0.85, background: true, bounds: new Box(bounds.x, bounds.y, bounds.w, bounds.h), padding: 0,
+        format: "png", background: true, bounds: new Box(bounds.x, bounds.y, bounds.w, bounds.h), padding: 0,
+        pixelRatio: exportPixelRatio(bounds, QUESTION_IMAGE.maxSide!),
       })
       return {
         kind: "selection",
-        image: await readQuestionImageBlob(blob),
+        image: await readQuestionImageBlob(blob, QUESTION_IMAGE),
         region: { x: bounds.x, y: bounds.y, w: Math.max(1, bounds.w), h: Math.max(1, bounds.h) },
       }
     },
-    captureStudentWork: async (alsoInclude) => {
+    captureStudentWork: async (alsoInclude, detail) => {
       const editor = editorRef.current
       if (!editor) return undefined
       const viewportBounds = editor.getViewportPageBounds()
@@ -439,14 +456,15 @@ export function AppShell({ board }: AppShellProps = {}) {
       if (!bounds) return undefined
       // Export exactly these page bounds (no padding), so the image's pixels map
       // linearly onto `region` - the prompt's fraction-to-coordinate formula relies on it.
+      const options = detail === "context" ? CONTEXT_IMAGE : QUESTION_IMAGE
       const { blob } = await editor.toImage(ids, {
-        format: "jpeg",
-        quality: 0.85,
+        format: "png",
         background: true,
         bounds: new Box(bounds.x, bounds.y, bounds.w, bounds.h),
         padding: 0,
+        pixelRatio: exportPixelRatio(bounds, options.maxSide!),
       })
-      const image = await readQuestionImageBlob(blob)
+      const image = await readQuestionImageBlob(blob, options)
       const shapes = studentIds.slice(0, 80).flatMap(id => {
         const shape = editor.getShape(id)
         const b = editor.getShapePageBounds(id)

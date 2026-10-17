@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type PointerEvent } from "react"
-import { ChevronLeft, ChevronRight, MessageCircle, MousePointerClick, Paperclip, PenLine, Send, Sparkles, Square, X } from "lucide-react"
+import { ChevronLeft, ChevronRight, CornerDownRight, MessageCircle, MousePointerClick, Paperclip, PenLine, Send, Sparkles, Square, X } from "lucide-react"
 import type { QuestionSource } from "@/lib/ai/question-source"
 import { viewportPoint, viewportRect, type ViewportPoint, type ViewportRect, type ViewportSize } from "@/lib/overlay/coordinates"
 import { clampToViewport, placeSpeech } from "@/lib/overlay/placement"
@@ -47,6 +47,8 @@ interface AiCompanionProps {
   onClearSelection: () => void
   hasQuestionSource: boolean
   onClearQuestionSource: () => void
+  /** Follow-up questions the tutor suggests; tapping one asks it. */
+  suggestions: string[]
 }
 
 function OrbIcon({ state }: { state: CompanionState }) {
@@ -76,6 +78,15 @@ export function AiCompanion(props: AiCompanionProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const panelId = useId()
+  // The orb shows a dot until the student opens it after new suggestions arrive.
+  const suggestionsKey = props.suggestions.join("\n")
+  const [seenSuggestions, setSeenSuggestions] = useState("")
+  const unseenSuggestions = suggestionsKey !== "" && suggestionsKey !== seenSuggestions
+
+  function toggleExpanded() {
+    if (!expanded) setSeenSuggestions(suggestionsKey)
+    setExpanded(!expanded)
+  }
 
   const shown = dragPos ?? position
   const clamp = (p: ViewportPoint) => clampToViewport(viewportRect(p.x, p.y, ORB_SIZE, ORB_SIZE), viewport)
@@ -126,7 +137,7 @@ export function AiCompanion(props: AiCompanionProps) {
       onUserMove(clamp(viewportPoint(drag.start.x + event.clientX - drag.x, drag.start.y + event.clientY - drag.y)))
       setDragPos(null)
     } else {
-      setExpanded((open) => !open)
+      toggleExpanded()
     }
   }
   function onOrbKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
@@ -171,7 +182,7 @@ export function AiCompanion(props: AiCompanionProps) {
         onKeyDown={onOrbKeyDown}
         onClick={(event) => {
           // Keyboard activation (Enter/Space) has detail 0; pointer clicks are handled on pointerup.
-          if (event.detail === 0) setExpanded((open) => !open)
+          if (event.detail === 0) toggleExpanded()
         }}
         className={cn(
           "group pointer-events-auto absolute flex touch-none select-none items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-blue-600 outline-none focus-visible:ring-4 focus-visible:ring-ring/50",
@@ -195,6 +206,12 @@ export function AiCompanion(props: AiCompanionProps) {
           )}
         />
         <OrbIcon state={state} />
+        {unseenSuggestions && !expanded && (
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute right-0.5 top-0.5 h-3 w-3 rounded-full border-2 border-white bg-amber-400"
+          />
+        )}
       </button>
 
       {props.speech && !note && !expanded && (
@@ -274,6 +291,28 @@ export function AiCompanion(props: AiCompanionProps) {
                 </li>
               ))}
             </ol>
+          )}
+          {props.suggestions.length > 0 && canAsk && (
+            <div className="mb-2.5 border-b border-border-subtle px-1 pb-2.5">
+              <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-ink-muted">Try asking</p>
+              <ul className="flex flex-col gap-1.5">
+                {props.suggestions.map((suggestion) => (
+                  <li key={suggestion}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onAsk(suggestion)
+                        collapse(false)
+                      }}
+                      className="flex w-full items-start gap-2 rounded-xl border border-border-subtle bg-surface px-2.5 py-2 text-left text-[13px] leading-snug text-ink transition-colors duration-150 hover:border-accent hover:bg-accent-subtle pointer-coarse:min-h-11"
+                    >
+                      <CornerDownRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-accent-foreground" aria-hidden="true" />
+                      <span dangerouslySetInnerHTML={{ __html: renderMixed(suggestion) }} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
           {props.selectionCount > 0 && (
             <div className="mb-2 flex items-center justify-between gap-2 rounded-lg bg-accent-subtle px-2.5 py-1.5 text-[12px] text-accent-foreground">

@@ -74,6 +74,27 @@ describe("teachingPlanSchema", () => {
     plan.extra = "nope"
     expect(teachingPlanSchema.safeParse(plan).success).toBe(false)
   })
+
+  it("keeps up to three tidy follow-up questions", () => {
+    const plan = validPlan() as Record<string, unknown>
+    plan.followUps = ["  Why is the  hypotenuse the longest side? ", "Does this work for any triangle?", "does this work for ANY triangle?", "How do I find a shorter side?", "What about 3D shapes?"]
+    const result = teachingPlanSchema.safeParse(plan)
+    expect(result.success && result.data.followUps).toEqual([
+      "Why is the hypotenuse the longest side?",
+      "Does this work for any triangle?",
+      "How do I find a shorter side?",
+    ])
+  })
+
+  it("never fails a lesson over malformed follow-ups - they're just dropped", () => {
+    for (const followUps of ["not a list", [42, null, ""], ["x".repeat(500)]]) {
+      const result = teachingPlanSchema.safeParse({ ...(validPlan() as object), followUps })
+      expect(result.success).toBe(true)
+      expect(result.success && result.data.followUps).toBeUndefined()
+    }
+    const without = teachingPlanSchema.safeParse(validPlan())
+    expect(without.success && without.data.followUps).toBeUndefined()
+  })
 })
 
 describe("toDrawingSequence", () => {

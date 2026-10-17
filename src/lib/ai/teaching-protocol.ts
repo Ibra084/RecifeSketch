@@ -26,10 +26,36 @@ export const teachingStepSchema = z.strictObject({
 })
 export type TeachingStep = z.infer<typeof teachingStepSchema>
 
+export const MAX_FOLLOW_UPS = 3
+export const MAX_FOLLOW_UP_LENGTH = 120
+
+/**
+ * The model's suggested next questions, tidied: trimmed, de-duplicated, at
+ * most three, each a sensible length. Anything malformed is dropped rather
+ * than failing the plan - suggestions are a bonus, never worth losing a lesson over.
+ */
+export function normalizeFollowUps(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const item of raw) {
+    if (typeof item !== "string") continue
+    const text = item.replace(/\s+/g, " ").trim()
+    const key = text.toLowerCase()
+    if (text.length < 4 || text.length > MAX_FOLLOW_UP_LENGTH || seen.has(key)) continue
+    seen.add(key)
+    out.push(text)
+    if (out.length === MAX_FOLLOW_UPS) break
+  }
+  return out.length > 0 ? out : undefined
+}
+
 export const teachingPlanSchema = z.strictObject({
   concept: z.string().min(1).max(200),
   level: teachingLevelSchema,
   steps: z.array(teachingStepSchema).min(1, "a plan needs at least one step").max(MAX_TEACHING_STEPS),
+  /** Questions the student might ask next to deepen their understanding (shown when they open the orb). */
+  followUps: z.unknown().transform(normalizeFollowUps).optional(),
 })
 export type TeachingPlan = z.infer<typeof teachingPlanSchema>
 

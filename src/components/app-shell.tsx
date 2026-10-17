@@ -499,6 +499,7 @@ export function AppShell({ board }: AppShellProps = {}) {
             onClearSelection={() => mountedEditor?.selectNone()}
             hasQuestionSource={tutor.hasQuestionSource}
             onClearQuestionSource={tutor.clearQuestionSource}
+            suggestions={tutor.suggestions}
           />
         )}
       </main>

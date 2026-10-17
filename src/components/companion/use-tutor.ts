@@ -82,6 +82,8 @@ export function useTutor(board: WhiteboardController) {
   const phaseRef = useRef<TutorPhase>("idle")
   const [note, setNote] = useState<TutorNote | null>(null)
   const noteIdRef = useRef(0)
+  /** Questions the tutor suggests asking next, from its latest answer. */
+  const [suggestions, setSuggestions] = useState<string[]>([])
   // The question chain so far - every step the student was shown, per recent question - sent with each follow-up.
   const [initialChain] = useState(() => (typeof window === "undefined" ? { history: [], sourceId: null } : loadChain()))
   const historyRef = useRef<PriorTurn[]>(initialChain.history)
@@ -110,6 +112,7 @@ export function useTutor(board: WhiteboardController) {
     async (question: string, attached?: QuestionSource) => {
       lastQuestionRef.current = question
       setNote(null)
+      setSuggestions([])
 
       if (!board.isReady()) {
         say("The whiteboard isn't ready yet - try again in a moment.", "error")
@@ -201,6 +204,7 @@ export function useTutor(board: WhiteboardController) {
 
       const plan = json.plan
       const commentary = plan.steps.map((step) => step.commentary)
+      setSuggestions(plan.followUps ?? [])
       setPhaseBoth("drawing")
       try {
         // OCR normally finishes well before the answer arrives; never hold the lesson up for long waiting on it.
@@ -267,6 +271,8 @@ export function useTutor(board: WhiteboardController) {
     ask,
     retry: () => { if (lastQuestionRef.current) void ask(lastQuestionRef.current) },
     cancel,
+    /** Follow-up questions suggested by the latest answer (empty while thinking or after "New topic"). */
+    suggestions,
     /** A question chain is under way (a question image, or earlier answers to build on). */
     hasQuestionSource,
     /** "New topic": forget the question image and the conversation so far; the board itself is untouched. */
@@ -276,6 +282,7 @@ export function useTutor(board: WhiteboardController) {
       historyRef.current = []
       saveChain([], null)
       setHasQuestionSource(false)
+      setSuggestions([])
     },
   }
 }

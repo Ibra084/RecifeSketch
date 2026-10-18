@@ -70,7 +70,12 @@ export function sourcePrompt(source?: QuestionSource): string {
       `Put any new working, graphs or explanatory text to the RIGHT, starting at x=${region.x + region.w + 80}, y=${region.y}.`,
       "Only thin annotation lines or unfilled outlines may overlap the original question. Keep labels in the margin and point to the relevant detail.",
       ...(source.image ? [
-        "TO MARK SOMETHING INSIDE THE IMAGE (a word, value, equation, point or feature of a printed graph),",
+        "TO MARK PRINTED TEXT IN THE IMAGE (a word, number or short phrase), use",
+        "highlight_text - the words are found by reading the image, so the mark lands exactly on them:",
+        "  highlight_text { id, text, occurrence?, style?: \"highlight\"|\"box\"|\"underline\"|\"circle\", color?, box?, label? }",
+        "text is exactly as printed; occurrence picks the nth match in reading order when it appears more than",
+        "once; ALWAYS also give box, your tight guess (same format as below), used if the text can't be read.",
+        "TO MARK ANYTHING ELSE INSIDE THE IMAGE (a point or feature of a printed graph or drawing),",
         "use mark_image - never create_shape/draw_line with page coordinates you worked out yourself:",
         "  mark_image { id, box: [ymin, xmin, ymax, xmax], style?: \"box\"|\"circle\"|\"underline\", color?, label? }",
         "box is the tight bounding box of exactly that thing in THIS image, on a 0-1000 scale (0,0 = the",

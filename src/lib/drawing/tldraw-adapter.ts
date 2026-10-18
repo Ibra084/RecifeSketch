@@ -34,6 +34,7 @@ import { findPhrase, pixelRectToPage, type OcrResult } from "./text-match"
 import { computeNiceTicks, mapPointsToCanvas, sampleFunction } from "./plotting"
 import { buildDrawSegments, buildLinePointsRecord } from "./tldraw-shape-builders"
 import { AttachedLabels } from "./attached-labels"
+import { nearestClearOffset } from "./lesson-placement"
 import type { ObjectFrame } from "./force-geometry"
 import { AI_AUTHORED_META } from "./authorship"
 import type {
@@ -202,11 +203,14 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
 
   createShape(action: CreateShapeAction): void {
     const at = this.followPlanShift({ x: action.x, y: action.y })
-    this.createGeo({ ...action, x: at.x, y: at.y })
+    this.createGeo({ ...action, x: at.x, y: at.y }, { clearOfWriting: true })
   }
 
-  /** A geo shape exactly where asked (image marks use this directly - they are placed on the image, not by the plan). */
-  private createGeo(action: CreateShapeAction): void {
+  /**
+   * A geo shape exactly where asked (image marks use this directly - they are placed on the image, not by the plan).
+   * `clearOfWriting` moves a free-placed shape off any writing it would cover.
+   */
+  private createGeo(action: CreateShapeAction, options: { clearOfWriting?: boolean } = {}): void {
     const tlId = this.track(action.id, "geo", "shape", action.label)
     const placement = turnedAboutCentre(
       { x: action.x + action.w / 2, y: action.y + action.h / 2 }, action.w, action.h, action.rotation ?? 0)
@@ -227,7 +231,36 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
         },
       },
     ])
+    if (options.clearOfWriting) this.keepOffWriting(tlId)
     if (action.label) this.labels.set(tlId, action.label, action.color)
+  }
+
+  /**
+   * THE VISUALS RULE: a shape, mass, pulley or piece of apparatus placed by coordinates never lands
+   * on writing already on the board (notes, working, labels in a box) - the model can't see how its
+   * text wrapped or where the notes column put it. It moves to the nearest clear spot, and writing
+   * the plan meant to go beside it follows. Left alone: a shape drawn around writing (boxing an
+   * answer), and anything attached to another object.
+   */
+  private keepOffWriting(tlId: TLShapeId): void {
+    const planned = this.editor.getShapePageBounds(tlId)
+    if (!planned) return
+    const writing = this.editor.getCurrentPageShapes().flatMap((shape) => {
+      if (shape.id === tlId || shape.meta.recifeLabelOwner || (shape.type !== "text" && shape.type !== MATH_SHAPE_TYPE)) return []
+      if (this.editor.getShapeAncestors(shape).some((parent) => parent.id === tlId)) return []
+      const box = this.editor.getShapePageBounds(shape)
+      return box && box.w > 0 ? [{ x: box.x, y: box.y, w: box.w, h: box.h }] : []
+    })
+    const hits = writing.filter((box) => regionsIntersect(planned, box))
+    if (hits.length === 0) return
+    const surrounds = (box: { x: number; y: number; w: number; h: number }) =>
+      planned.x <= box.x && planned.y <= box.y && planned.x + planned.w >= box.x + box.w && planned.y + planned.h >= box.y + box.h
+    if (hits.every(surrounds)) return
+    const offset = nearestClearOffset({ x: planned.x, y: planned.y, w: planned.w, h: planned.h }, writing)
+    if (!offset) return // nowhere near is clear: better overlapping than far from its subject
+    const shape = this.editor.getShape(tlId)!
+    this.editor.updateShape({ id: tlId, type: shape.type, x: shape.x + offset.dx, y: shape.y + offset.dy })
+    this.planShifts.push({ area: { x: planned.x, y: planned.y, w: planned.w, h: planned.h }, dx: offset.dx, dy: offset.dy })
   }
 
   createFreehandPath(action: CreateFreehandPathAction): void {
@@ -365,9 +398,12 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
     const drawn = this.planDiagramBounds()
     const diagram = drawn ?? this.imageRegion
     const isShortLabel = !text.includes("\n") && text.trim().split(/\s+/).length <= 3 && text.length <= 28
+    // The label's whole extent counts, not just its top-left corner: one written just left of the
+    // drawing (e.g. "Primary (Input)" beside the left coil) is still on the drawing's left side.
+    const labelW = text.length * 10
     if (isShortLabel && diagram &&
-      requested.x >= diagram.x - 60 && requested.x <= diagram.x + diagram.w + 60 &&
-      requested.y >= diagram.y - 60 && requested.y <= diagram.y + diagram.h + 60) {
+      requested.x + labelW >= diagram.x - 60 && requested.x <= diagram.x + diagram.w + 60 &&
+      requested.y + 40 >= diagram.y - 60 && requested.y <= diagram.y + diagram.h + 60) {
       return requested
     }
     if (!diagram) {
@@ -684,6 +720,7 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
     const tlId = this.track(action.id, "group", "apparatus",
       `${action.kind.replace(/_/g, " ")}${action.label ? ` (${action.label})` : ""}`)
     this.editor.groupShapes(partIds, { groupId: tlId, select: false })
+    if (!targetId) this.keepOffWriting(tlId)
     if (action.label) this.labels.set(tlId, action.label, action.color)
   }
 
@@ -738,6 +775,7 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
     this.editor.updateShape({ id: tlId, type: "group", meta: {
       ...this.editor.getShape(tlId)?.meta, recifeSlope: { angle: action.angle, drawnAngle: g.drawnAngle, downhill: action.downhill },
     } })
+    this.keepOffWriting(tlId)
     if (action.label) this.labels.set(tlId, action.label, action.color)
   }
 
@@ -892,6 +930,7 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
     }
     const tlId = this.track(action.id, "group", "shape", `pulley${action.label ? ` (${action.label})` : ""}`)
     this.editor.groupShapes(partIds, { groupId: tlId, select: false })
+    if (!action.at) this.keepOffWriting(tlId)
     if (action.label) this.labels.set(tlId, action.label)
   }
 
@@ -921,7 +960,7 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
       x: centre.x - w / 2, y: centre.y - h / 2, w, h,
       color: action.color ?? "black", fill: action.fill ?? "none", dash: "solid", size: "m",
       ...(action.label ? { label: action.label } : {}),
-    })
+    }, { clearOfWriting: !action.hang })
   }
 
   /**

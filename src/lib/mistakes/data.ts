@@ -1,4 +1,5 @@
 import "server-only"
+import { revalidatePath } from "next/cache"
 import { z } from "zod"
 import { requireUser } from "@/lib/auth/session"
 import { createClient } from "@/lib/supabase/server"
@@ -176,6 +177,9 @@ export async function recordPracticeResult(mistakeId: string, result: "correct" 
   const supabase = await createClient()
   const { data } = await supabase.from("mistakes").select("practice_attempts").eq("id", mistakeId).eq("user_id", user.id).maybeSingle()
   if (!data) return
+  // The Mistakes tab shows the new status straight away.
+  revalidatePath("/mistakes")
+  revalidatePath("/dashboard")
   await supabase
     .from("mistakes")
     .update({

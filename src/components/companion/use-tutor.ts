@@ -356,7 +356,9 @@ export function useTutor(board: WhiteboardController, options: { boardId?: strin
       ...(result.correction ? [{ actions: [{ type: "mark_image" as const, id: `${id}-fix`, box: result.box, style: "underline" as const, color: "green" as const }] }] : []),
     ]
     const commentary = [
-      result.hint ? `${result.headline}\n\nHint: ${result.hint}` : result.headline,
+      // "**Hint:**", not "Hint:" right after the line break: the bubble's maths renderer reads a newline followed
+      // by a letter as a mangled LaTeX command (\n + "Hint"), and showed it as red maths.
+      result.hint ? `${result.headline}\n\n**Hint:** ${result.hint}` : result.headline,
       ...(result.correction ? [`The correct version: ${result.correction}`] : []),
     ]
     setPhaseBoth("drawing")

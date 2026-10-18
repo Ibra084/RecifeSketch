@@ -1,12 +1,12 @@
 import { Suspense } from "react"
 import Link from "next/link"
-import { LayoutGrid, LogOut, Settings, ShieldCheck } from "lucide-react"
+import { Brain, LayoutGrid, LogOut, Settings, ShieldCheck } from "lucide-react"
 import { cn } from "cn"
 import { RecifeWordmark } from "@/components/brand/recife-wordmark"
 import { signOutAction } from "@/app/(auth)/actions"
 import { getCurrentUser } from "@/lib/auth/session"
 
-type Section = "dashboard" | "settings" | "admin"
+type Section = "dashboard" | "mistakes" | "settings" | "admin"
 
 function navLink(href: string, label: string, Icon: typeof Settings, isActive: boolean) {
   return (
@@ -39,6 +39,7 @@ export function AppHeader({ active }: { active: Section }) {
         <RecifeWordmark href="/dashboard" showProduct className="mr-auto" />
         <nav aria-label="Main" className="flex items-center gap-1">
           {navLink("/dashboard", "Whiteboards", LayoutGrid, active === "dashboard")}
+          {navLink("/mistakes", "Mistakes", Brain, active === "mistakes")}
           {navLink("/settings", "Settings", Settings, active === "settings")}
           <Suspense fallback={null}>
             <AdminLink active={active} />

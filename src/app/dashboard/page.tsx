@@ -9,7 +9,7 @@ import { NoticeBanner } from "@/components/auth/fields"
 import { requireUser } from "@/lib/auth/session"
 import { listWhiteboards, type WhiteboardSummary } from "@/lib/whiteboards/data"
 import { NewWhiteboardButton } from "@/components/dashboard/new-whiteboard-button"
-import { MistakeMemory } from "@/components/dashboard/mistake-memory"
+import { MistakesLink } from "@/components/dashboard/mistake-memory"
 import { listMistakes } from "@/lib/mistakes/data"
 
 export const metadata: Metadata = { title: "Your whiteboards · Recife Sketch" }
@@ -92,8 +92,8 @@ async function DashboardContent({ searchParams }: { searchParams: PageProps<"/da
 
       <NewWhiteboardCard />
 
-      {/* Hidden until the Mistake Memory table exists (listMistakes returns null before the migration). */}
-      {mistakes && <MistakeMemory mistakes={mistakes} />}
+      {/* A pointer to the Mistakes tab (hidden until the Mistake Memory table exists). */}
+      {mistakes && <MistakesLink mistakes={mistakes} />}
 
       {boards.length === 0 ? (
         <div className="mt-8 rounded-2xl border border-dashed border-gray-200 px-6 py-10 text-center">

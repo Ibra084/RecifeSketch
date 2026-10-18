@@ -335,8 +335,9 @@ export function useTutor(board: WhiteboardController, options: { boardId?: strin
       result = body
     } catch (err) {
       setPhaseBoth("idle")
+      // A plain note: the error style's "Retry question" would re-ask the last question, not re-check.
       if (controller.signal.aborted) say("Stopped. Check again whenever you're ready.")
-      else say(err instanceof Error ? err.message : "I couldn't check that just now. Please try again.", "error")
+      else say(err instanceof Error ? err.message : "I couldn't check that just now. Please try again.")
       return
     } finally {
       requestRef.current = null

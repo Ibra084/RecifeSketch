@@ -20,7 +20,16 @@ const isLanding = (pathname: string) => pathname === "/"
 export async function updateSession(request: NextRequest) {
   const url = process.env.SUPABASE_URL?.trim()
   const anonKey = process.env.SUPABASE_ANON_KEY?.trim()
-  const { pathname } = request.nextUrl
+  const { pathname, searchParams } = request.nextUrl
+
+  // An email link Supabase sent to the bare site address (its fallback when the app's link isn't
+  // on its allow list) - finish it on /auth/confirm, or explain a used link, instead of ignoring it.
+  if (isLanding(pathname) && (searchParams.has("code") || searchParams.has("error_code"))) {
+    const target = searchParams.has("code")
+      ? new URL(`/auth/confirm?code=${encodeURIComponent(searchParams.get("code")!)}`, request.url)
+      : new URL("/sign-in?error=link_used", request.url)
+    return NextResponse.redirect(target)
+  }
 
   if (!url || !anonKey) {
     // Without Supabase nothing can sign in; keep students on the auth pages,

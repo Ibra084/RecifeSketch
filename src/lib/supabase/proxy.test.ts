@@ -35,6 +35,11 @@ describe("updateSession (configured)", () => {
     }
   })
 
+  it("finishes an email link that Supabase sent to the bare site address", async () => {
+    expect(location(await updateSession(req("/?code=abc123")))).toBe("/auth/confirm?code=abc123")
+    expect(location(await updateSession(req("/?error=access_denied&error_code=otp_expired")))).toBe("/sign-in?error=link_used")
+  })
+
   it("rejects signed-out API calls with 401", async () => {
     expect((await updateSession(req("/api/tutor"))).status).toBe(401)
   })

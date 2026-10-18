@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
-    "alias": "node --env-file=.env.local scripts/student-alias.mts"
+    "alias": "node --env-file=.env.local scripts/student-alias.mts",
+    "bugs:pull": "node --env-file=.env.local scripts/pull-bug-reports.mts"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",

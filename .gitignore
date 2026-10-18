@@ -47,6 +47,9 @@ yarn-error.log*
 /work
 /image.png
 
+# bug reports sent from the app (may contain pictures of student work)
+/bug-reports
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

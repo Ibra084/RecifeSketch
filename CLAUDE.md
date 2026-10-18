@@ -105,6 +105,18 @@ the Tailwind/shadcn setup.
 - Public deployment.
 - Anything else whose blast radius extends outside this local repo.
 
+## Bug reports (check at the start of every session)
+
+Users report bugs from the faint bug button in the whiteboard's bottom-right
+corner. Each report is a folder in `bug-reports/` (gitignored - it may contain
+pictures of student work): `report.md` (description, console errors, status
+checklist), `screenshot.png`, `tutor.json` (the last tutor requests/answers,
+image data stripped - the model's raw boxes and plans for placement bugs) and
+`board.json` (the tldraw document). Reports from the deployed app land in the
+private `bug-reports` storage bucket; run `npm run bugs:pull` to copy them in.
+At the start of work, read any reports whose `report.md` isn't marked Fixed,
+reproduce, fix, and tick the checklist in that `report.md`.
+
 ## Project plan
 
 See `PROJECT_PLAN.md` for the phase breakdown and completion checklist.

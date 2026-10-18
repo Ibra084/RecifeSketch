@@ -6,6 +6,7 @@ import "tldraw/tldraw.css"
 import { attachBoardPersistence, type SavedBoard, type SaveStatus } from "./board-persistence"
 import { chooseStartingBoard, readBoardCache } from "./board-cache"
 import { boardAssetStore } from "./board-images"
+import { BugReporter } from "@/components/bug-report/bug-reporter"
 import { MathShapeUtil } from "@/lib/drawing/math-shape"
 import { GraphShapeUtil } from "@/lib/drawing/graph-shape"
 
@@ -104,6 +105,7 @@ function WhiteboardCanvas({ onEditorMount, board, onSaveStatus, hideStylePanel }
         licenseKey={process.env.NEXT_PUBLIC_TLDRAW_LICENSE_KEY}
       />
       <WhiteboardEmptyHint editor={editor} />
+      <BugReporter editor={editor} boardId={board?.id} />
     </div>
   )
 }

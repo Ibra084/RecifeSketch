@@ -1,14 +1,14 @@
 "use client"
 
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type PointerEvent } from "react"
-import { ChevronLeft, ChevronRight, CornerDownRight, MessageCircle, MousePointerClick, Paperclip, PenLine, Send, Sparkles, Square, X } from "lucide-react"
+import { Bookmark, BookmarkCheck, ChevronLeft, ChevronRight, CircleCheck, CornerDownRight, MessageCircle, MousePointerClick, Paperclip, PenLine, Send, Sparkles, Square, X } from "lucide-react"
 import type { QuestionSource } from "@/lib/ai/question-source"
 import { viewportPoint, viewportRect, type ViewportPoint, type ViewportRect, type ViewportSize } from "@/lib/overlay/coordinates"
 import { clampToViewport, placeSpeech } from "@/lib/overlay/placement"
 import { renderMixed } from "@/lib/drawing/math-render"
 import { cn } from "@/lib/utils"
 import { readQuestionImage } from "./question-image"
-import type { TutorNote } from "./use-tutor"
+import type { PendingMistake, TutorNote } from "./use-tutor"
 import { ORB_SIZE } from "./use-companion-orb"
 
 export type CompanionState = "idle" | "thinking" | "drawing" | "speaking"
@@ -49,6 +49,45 @@ interface AiCompanionProps {
   onClearQuestionSource: () => void
   /** Follow-up questions the tutor suggests; tapping one asks it. */
   suggestions: string[]
+  /** Mistake Memory: check the selected working. */
+  onCheckWork: () => void
+  /** A verified mistake the student may save for revision. */
+  pendingMistake: PendingMistake | null
+  onSaveMistake: () => void
+  onDismissMistake: () => void
+}
+
+/** "Save this mistake for revision?" - shown after a verified mistake, the student decides. */
+function SaveMistakeCard({ pending, onSave, onDismiss }: { pending: PendingMistake; onSave: () => void; onDismiss: () => void }) {
+  if (pending.state === "saved") {
+    return (
+      <p role="status" className="mb-2.5 flex items-center gap-2 rounded-xl bg-green-50 px-3 py-2 text-[12.5px] text-green-700">
+        <BookmarkCheck className="h-4 w-4 shrink-0" aria-hidden="true" />
+        Saved to Mistake Memory - practise it from your dashboard.
+      </p>
+    )
+  }
+  return (
+    <div className="mb-2.5 rounded-xl border border-border-subtle bg-surface-subtle px-3 py-2.5">
+      <p className="text-[13px] font-semibold text-ink">Save this mistake for revision?</p>
+      <p className="mt-0.5 text-[12px] leading-snug text-ink-secondary">{pending.draft.concept}: {pending.draft.misconception}</p>
+      {pending.state === "error" && <p role="alert" className="mt-1 text-[12px] text-red-600">{pending.error}</p>}
+      <div className="mt-2 flex items-center gap-2">
+        <button
+          type="button"
+          onClick={onSave}
+          disabled={pending.state === "saving"}
+          className="flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-[12px] font-semibold text-primary-foreground disabled:opacity-50 pointer-coarse:h-11"
+        >
+          <Bookmark className="h-3.5 w-3.5" aria-hidden="true" />
+          {pending.state === "saving" ? "Saving…" : "Save"}
+        </button>
+        <button type="button" onClick={onDismiss} className="h-8 rounded-lg px-2.5 text-[12px] font-medium text-ink-secondary hover:bg-surface-sunken hover:text-ink pointer-coarse:h-11">
+          No thanks
+        </button>
+      </div>
+    </div>
+  )
 }
 
 function OrbIcon({ state }: { state: CompanionState }) {
@@ -79,7 +118,7 @@ export function AiCompanion(props: AiCompanionProps) {
   const fileRef = useRef<HTMLInputElement>(null)
   const panelId = useId()
   // The orb shows a dot until the student opens it after new suggestions arrive.
-  const suggestionsKey = props.suggestions.join("\n")
+  const suggestionsKey = props.suggestions.join("\n") + (props.pendingMistake?.state === "offered" ? "\nsave-mistake" : "")
   const [seenSuggestions, setSeenSuggestions] = useState("")
   const unseenSuggestions = suggestionsKey !== "" && suggestionsKey !== seenSuggestions
 
@@ -292,6 +331,9 @@ export function AiCompanion(props: AiCompanionProps) {
               ))}
             </ol>
           )}
+          {props.pendingMistake && (
+            <SaveMistakeCard pending={props.pendingMistake} onSave={props.onSaveMistake} onDismiss={props.onDismissMistake} />
+          )}
           {props.suggestions.length > 0 && canAsk && (
             <div className="mb-2.5 border-b border-border-subtle px-1 pb-2.5">
               <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-ink-muted">Try asking</p>
@@ -386,6 +428,19 @@ export function AiCompanion(props: AiCompanionProps) {
                 className="flex h-9 w-9 items-center justify-center rounded-lg text-ink-secondary hover:bg-surface-sunken hover:text-ink disabled:opacity-40 pointer-coarse:h-11 pointer-coarse:w-11"
               >
                 <Paperclip className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  props.onCheckWork()
+                  collapse(false)
+                }}
+                disabled={busy}
+                title="Check the working you've selected"
+                className="flex h-9 items-center gap-1 truncate rounded-lg px-2 text-[12px] font-medium text-ink-secondary hover:bg-surface-sunken hover:text-ink disabled:opacity-40 pointer-coarse:h-11"
+              >
+                <CircleCheck className="h-4 w-4 shrink-0" aria-hidden="true" />
+                Check my work
               </button>
               {props.hasQuestionSource && (
                 <button

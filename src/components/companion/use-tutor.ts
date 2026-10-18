@@ -12,6 +12,8 @@ import type { PlaybackSnapshot } from "@/lib/drawing/playback/types"
 import type { TrackedObjectSummary } from "@/lib/drawing/tldraw-adapter"
 import type { OcrResult } from "@/lib/drawing/text-match"
 import { refineCopiedFigure } from "./second-look"
+import type { CheckWorkResult, MistakeDraft } from "@/lib/mistakes/schema"
+import { saveMistakeAction } from "@/app/mistakes/actions"
 
 export type TutorPhase = "idle" | "thinking" | "drawing"
 
@@ -81,8 +83,18 @@ function saveChain(history: PriorTurn[], sourceId: TLShapeId | null) {
   }
 }
 
-export function useTutor(board: WhiteboardController) {
+/** A verified mistake the student may save to Mistake Memory. */
+export interface PendingMistake {
+  draft: MistakeDraft
+  token: string
+  state: "offered" | "saving" | "saved" | "error"
+  error?: string
+}
+
+export function useTutor(board: WhiteboardController, options: { boardId?: string } = {}) {
+  const { boardId } = options
   const [phase, setPhase] = useState<TutorPhase>("idle")
+  const [pendingMistake, setPendingMistake] = useState<PendingMistake | null>(null)
   const phaseRef = useRef<TutorPhase>("idle")
   const [note, setNote] = useState<TutorNote | null>(null)
   const noteIdRef = useRef(0)
@@ -285,6 +297,86 @@ export function useTutor(board: WhiteboardController) {
     [board, run]
   )
 
+  /**
+   * "Check my work": looks at exactly what the student selected (or their
+   * visible working), and shows the verdict on the board - the step boxed, a
+   * hint first, and the correction only when they press Next. The student's
+   * own writing is never changed.
+   */
+  const checkWork = useCallback(async () => {
+    if (phaseRef.current !== "idle" || !board.isReady()) return
+    setNote(null)
+    setPendingMistake(null)
+    setSuggestions([])
+    let source: QuestionSource | undefined
+    try {
+      source = board.getSelection() ? await board.captureSelection() : await board.captureStudentWork([], "full")
+    } catch {
+      source = undefined
+    }
+    if (!source?.image || !source.region) {
+      say("Write your working on the board, select it, then press Check my work.")
+      return
+    }
+
+    setPhaseBoth("thinking")
+    const controller = new AbortController()
+    requestRef.current = controller
+    let result: CheckWorkResult
+    try {
+      const response = await fetch("/api/check-work", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: source.image, ...(boardId ? { boardId } : {}) }),
+        signal: controller.signal,
+      })
+      const body = (await response.json().catch(() => ({}))) as CheckWorkResult & { error?: string }
+      if (!response.ok) throw new Error(body.error || "I couldn't check that just now. Please try again.")
+      result = body
+    } catch (err) {
+      setPhaseBoth("idle")
+      if (controller.signal.aborted) say("Stopped. Check again whenever you're ready.")
+      else say(err instanceof Error ? err.message : "I couldn't check that just now. Please try again.", "error")
+      return
+    } finally {
+      requestRef.current = null
+    }
+
+    // Unsure: say so, and mark nothing.
+    if (result.verdict === "uncertain" || !result.box) {
+      setPhaseBoth("idle")
+      say(result.headline)
+      return
+    }
+    const id = `check-${Date.now().toString(36)}`
+    const color = result.verdict === "mistake" ? "red" : result.verdict === "correct" ? "green" : "orange"
+    const sequence: ReturnType<typeof toDrawingSequence> = [
+      { actions: [{ type: "mark_image", id, box: result.box, style: "box", color }] },
+      ...(result.correction ? [{ actions: [{ type: "mark_image" as const, id: `${id}-fix`, box: result.box, style: "underline" as const, color: "green" as const }] }] : []),
+    ]
+    const commentary = [
+      result.hint ? `${result.headline}\n\nHint: ${result.hint}` : result.headline,
+      ...(result.correction ? [`The correct version: ${result.correction}`] : []),
+    ]
+    setPhaseBoth("drawing")
+    try {
+      await board.play(sequence, commentary, source.region, null)
+      if (result.draft && result.saveToken) setPendingMistake({ draft: result.draft, token: result.saveToken, state: "offered" })
+    } catch {
+      say("I couldn't show that on the board. Please try again.", "error")
+    } finally {
+      setPhaseBoth("idle")
+    }
+  }, [board, boardId, say, setPhaseBoth])
+
+  const saveMistake = useCallback(async () => {
+    const pending = pendingMistake
+    if (!pending || pending.state === "saving" || pending.state === "saved") return
+    setPendingMistake({ ...pending, state: "saving" })
+    const result = await saveMistakeAction(pending.draft, pending.token).catch(() => ({ ok: false, error: "Couldn't save it right now." }))
+    setPendingMistake(result.ok ? { ...pending, state: "saved" } : { ...pending, state: "error", error: result.error })
+  }, [pendingMistake])
+
   // Stops whichever phase is running: the pending request while thinking, or the playback while drawing.
   const cancel = useCallback(() => {
     requestRef.current?.abort("user")
@@ -298,6 +390,11 @@ export function useTutor(board: WhiteboardController) {
     ask,
     retry: () => { if (lastQuestionRef.current) void ask(lastQuestionRef.current) },
     cancel,
+    /** Mistake Memory: check the selected working; a verified mistake can then be saved. */
+    checkWork,
+    pendingMistake,
+    saveMistake,
+    dismissMistake: () => setPendingMistake(null),
     /** Follow-up questions suggested by the latest answer (empty while thinking or after "New topic"). */
     suggestions,
     /** A question chain is under way (a question image, or earlier answers to build on). */

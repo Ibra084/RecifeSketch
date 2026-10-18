@@ -2,7 +2,7 @@
 
 import dynamic from "next/dynamic"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Box, createShapeId, renderPlaintextFromRichText, useValue, type Editor, type TLShapeId } from "tldraw"
+import { Box, createShapeId, renderPlaintextFromRichText, toRichText, useValue, type Editor, type TLShapeId } from "tldraw"
 import { RecifeWordmark } from "@/components/brand/recife-wordmark"
 import { BoardHeader } from "@/components/whiteboard/board-header"
 import type { SavedBoard, SaveStatus } from "@/components/whiteboard/board-persistence"
@@ -98,9 +98,33 @@ type StepHandler = (sequence: DrawingSequence, stepIndex: number, text: string |
 interface AppShellProps {
   /** A saved whiteboard (from the dashboard). Without one, the board persists locally only. */
   board?: SavedBoard & { title: string }
+  /** Mistake Memory practice: the question this practice board is for. */
+  practice?: { prompt: string }
 }
 
-export function AppShell({ board }: AppShellProps = {}) {
+/**
+ * Puts a practice question on its board, once: a locked text shape marked as
+ * question material (so "Check my work" reads only the student's working).
+ */
+function placePracticeQuestion(editor: Editor, prompt: string) {
+  if (editor.getCurrentPageShapes().some((shape) => shape.meta.recifePracticeQuestion)) return
+  const view = editor.getViewportPageBounds()
+  editor.createShapes([{
+    type: "text",
+    x: view.x + 80,
+    y: view.y + 80,
+    isLocked: true,
+    meta: { recifePracticeQuestion: true, recifeQuestionSource: true },
+    props: {
+      richText: toRichText(`Practice: ${prompt}\nWrite your working below, select it, then tap the orb and choose "Check my work".`),
+      size: "m",
+      font: "sans",
+      autoSize: true,
+    },
+  }])
+}
+
+export function AppShell({ board, practice }: AppShellProps = {}) {
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("saved")
   const [stylePanelHidden, setStylePanelHidden] = useDeviceFlag("recife-sketch-hide-style-panel")
   // The engine and animator live for the whiteboard's whole mounted
@@ -468,7 +492,12 @@ export function AppShell({ board }: AppShellProps = {}) {
     },
   }))
 
-  const tutor = useTutor(boardController)
+  const tutor = useTutor(boardController, { boardId: board?.id })
+
+  const practicePrompt = practice?.prompt
+  useEffect(() => {
+    if (mountedEditor && practicePrompt) placePracticeQuestion(mountedEditor, practicePrompt)
+  }, [mountedEditor, practicePrompt])
 
   const companionState: CompanionState =
     tutor.phase === "thinking" ? "thinking"
@@ -534,6 +563,10 @@ export function AppShell({ board }: AppShellProps = {}) {
             hasQuestionSource={tutor.hasQuestionSource}
             onClearQuestionSource={tutor.clearQuestionSource}
             suggestions={tutor.suggestions}
+            onCheckWork={() => void tutor.checkWork()}
+            pendingMistake={tutor.pendingMistake}
+            onSaveMistake={() => void tutor.saveMistake()}
+            onDismissMistake={tutor.dismissMistake}
           />
         )}
       </main>

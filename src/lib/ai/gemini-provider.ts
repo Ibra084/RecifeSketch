@@ -1,7 +1,11 @@
 import type { AIConfig } from "./config"
 import { buildRepairPrompt, buildTeachingPrompt } from "./prompt"
-import type { AIProvider, LocatePartsRequest, LocatePartsResult, TeachingPlanFailure, TeachingPlanRequest, TeachingPlanResult } from "./provider"
+import type {
+  AIProvider, CheckWorkReading, CheckWorkRequest, LocatePartsRequest, LocatePartsResult, TeachingPlanFailure, TeachingPlanRequest, TeachingPlanResult,
+} from "./provider"
 import { buildLocatePrompt, LOCATE_MAX_OUTPUT_TOKENS, LOCATE_TIMEOUT_MS, parseLocateResponse } from "./locate-parts"
+import { buildCheckWorkPrompt, CHECK_WORK_MAX_OUTPUT_TOKENS } from "../mistakes/check-prompt"
+import { checkWorkModelSchema } from "../mistakes/schema"
 import { isTransientFailure, MAX_TRANSIENT_RETRIES, TRANSIENT_RETRY_DELAY_MS } from "./retry"
 import { parseTeachingPlanResponse } from "./response-parser"
 import { estimateUsage, usageFromMeasuredTokens, type UsageEstimate } from "./usage-tracker"
@@ -117,6 +121,38 @@ export class GeminiProvider implements AIProvider {
     }
 
     return { ok: false, failure: { kind: "invalid_output", detail: "exhausted retries" } }
+  }
+
+  /**
+   * "Check my work": reads the student's working from the cropped image.
+   * One bounded request (transient retries only, no repair loop); the answer
+   * is parsed leniently, and the maths itself is checked afterwards by the
+   * deterministic checker - so an odd reading becomes "I'm not sure", never
+   * a made-up correction.
+   */
+  async checkWork(request: CheckWorkRequest, signal?: AbortSignal): Promise<CheckWorkReading> {
+    const apiKey = this.options.config.gemini.apiKey
+    if (!apiKey) return { ok: false, failure: { kind: "missing_api_key" } }
+    const result = await this.callGeminiWithTransientRetry({
+      apiKey,
+      model: this.options.config.gemini.model,
+      prompt: buildCheckWorkPrompt(request.practicePrompt),
+      maxOutputTokens: CHECK_WORK_MAX_OUTPUT_TOKENS,
+      deadline: Date.now() + Math.min(this.options.config.requestTimeoutMs, 30_000),
+      signal,
+      images: [request.image],
+      thinkingLevel: "low",
+    })
+    if (!result.ok) return result
+    let json: unknown
+    try {
+      json = JSON.parse(result.text.trim().replace(/^```(?:json)?\s*|\s*```$/g, ""))
+    } catch {
+      return { ok: false, failure: { kind: "invalid_output", detail: "check-work: not JSON" } }
+    }
+    const reading = checkWorkModelSchema.safeParse(json)
+    if (!reading.success) return { ok: false, failure: { kind: "invalid_output", detail: "check-work: wrong shape" } }
+    return { ok: true, reading: reading.data, usage: result.usage }
   }
 
   /**

@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server"
 import { createServerClient } from "@supabase/ssr"
 
 const AUTH_PAGES = ["/sign-in", "/sign-up", "/alias", "/forgot-password", "/check-email"]
-const PUBLIC_PAGES = [...AUTH_PAGES, "/auth/confirm", "/terms", "/privacy"]
+const PUBLIC_PAGES = [...AUTH_PAGES, "/auth/confirm", "/confirm-email", "/terms", "/privacy"]
 
 function matches(pathname: string, paths: readonly string[]) {
   return paths.some((p) => pathname === p || pathname.startsWith(`${p}/`))

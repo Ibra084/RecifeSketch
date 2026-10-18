@@ -9,6 +9,8 @@ import { ErrorBanner, NoticeBanner, PasswordField, SubmitButton, TextField } fro
 
 const LINK_ERRORS: Record<string, string> = {
   link_invalid: "That link has expired or was already used. Please sign in, or request a new link.",
+  link_used:
+    "That link was already used, which usually means your email is confirmed. Sign in below. If it says your email isn't confirmed yet, create your account again to get a new link.",
   not_configured: "Sign-in isn't set up on this server yet.",
 }
 

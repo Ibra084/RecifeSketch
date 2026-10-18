@@ -30,7 +30,7 @@ describe("updateSession (configured)", () => {
   })
 
   it("leaves public pages reachable when signed out", async () => {
-    for (const path of ["/", "/sign-in", "/sign-up", "/alias", "/forgot-password", "/terms", "/auth/confirm"]) {
+    for (const path of ["/", "/sign-in", "/sign-up", "/alias", "/forgot-password", "/terms", "/auth/confirm", "/confirm-email"]) {
       expect(location(await updateSession(req(path)))).toBeNull()
     }
   })

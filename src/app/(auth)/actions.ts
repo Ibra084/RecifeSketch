@@ -2,6 +2,7 @@
 
 import { redirect } from "next/navigation"
 import { z } from "zod"
+import type { EmailOtpType } from "@supabase/supabase-js"
 import { createAdminClient, createClient } from "@/lib/supabase/server"
 import { readAuthConfig, requireAuthConfig } from "@/lib/auth/config"
 import { loadBlockedEmailDomains } from "@/lib/auth/blocked-domains"
@@ -123,6 +124,24 @@ export async function resendVerificationAction(_prev: FormState, formData: FormD
   })
   if (error && error.status === 429) return { error: friendlyAuthError(error) }
   return { message: "If that address has an account waiting to be verified, we've sent a new link." }
+}
+
+// ─── Email links (pressed on /confirm-email, see ConfirmLinkForm) ───────────
+
+const LINK_TYPES: readonly EmailOtpType[] = ["signup", "email", "recovery", "invite", "email_change", "magiclink"]
+
+export async function confirmEmailLinkAction(formData: FormData): Promise<void> {
+  const tokenHash = field(formData, "token_hash")
+  const type = field(formData, "type") as EmailOtpType
+  const recovery = type === "recovery"
+  const next = safeNextPath(field(formData, "next"), recovery ? "/reset-password" : "/dashboard")
+  const failed = recovery ? "/forgot-password?error=link_invalid" : "/sign-in?error=link_used"
+  if (!readAuthConfig()) redirect("/sign-in?error=not_configured")
+  if (!tokenHash || !LINK_TYPES.includes(type)) redirect(failed)
+
+  const supabase = await createClient()
+  const { error } = await supabase.auth.verifyOtp({ type, token_hash: tokenHash })
+  redirect(error ? failed : next)
 }
 
 // ─── Password recovery ─────────────────────────────────────────────────────

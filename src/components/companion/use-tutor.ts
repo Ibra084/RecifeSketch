@@ -37,7 +37,7 @@ export interface WhiteboardController {
    */
   play(sequence: ReturnType<typeof toDrawingSequence>, stepCommentary: string[], imageRegion?: QuestionSource["region"], imageText?: OcrResult | null): Promise<PlaybackSnapshot>
   /** The printed words in a board area with their exact pixel boxes (OCR), or null if they couldn't be read. */
-  readImageText(region: NonNullable<QuestionSource["region"]>): Promise<OcrResult | null>
+  readImageText(image: NonNullable<QuestionSource["image"]>): Promise<OcrResult | null>
   cancel(): void
   getVisualObjects(): TrackedObjectSummary[]
   getLayout(): TutorContext["layout"]
@@ -181,7 +181,7 @@ export function useTutor(board: WhiteboardController) {
       }
 
       // Read the image's printed words (OCR) while the tutor thinks: exact keyword highlights and figure crops use them.
-      const imageTextPromise = source?.image && source.region ? board.readImageText(source.region).catch(() => null) : Promise.resolve(null)
+      const imageTextPromise = source?.image && source.region ? board.readImageText(source.image).catch(() => null) : Promise.resolve(null)
 
       const context: TutorContext = {
         objects: board.getVisualObjects(),

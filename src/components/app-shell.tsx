@@ -364,7 +364,7 @@ export function AppShell({ board }: AppShellProps = {}) {
       if (!editor) throw new Error("Whiteboard not ready")
       const shape = editor.getShape(id)
       let image: Awaited<ReturnType<typeof readQuestionImageBlob>>
-      if (shape?.type === "image" && shape.props.assetId) {
+      if (shape?.type === "image" && shape.props.assetId && !shape.props.flipX && !shape.props.flipY && editor.getShapePageTransform(shape).rotation() === 0) {
         // The photo's own file, at its own resolution (with the shape's crop) - never a re-render of the
         // board, which would be limited to its on-screen size. Same extent as the shape, so marks map exactly.
         const url = await editor.resolveAssetUrl(shape.props.assetId, { shouldResolveToOriginal: true })
@@ -409,16 +409,10 @@ export function AppShell({ board }: AppShellProps = {}) {
       if (!region || objects.length === 0) return undefined
       return { region: { x: region.x, y: region.y, w: Math.max(1, region.w), h: Math.max(1, region.h) }, objects }
     },
-    readImageText: async (region) => {
-      const editor = editorRef.current
-      if (!editor) return null
-      const area = new Box(region.x, region.y, region.w, region.h)
-      const ids = editor.getCurrentPageShapes().filter((shape) => editor.getShapePageBounds(shape)?.collides(area)).map((shape) => shape.id)
-      if (ids.length === 0) return null
-      // A sharp, larger render of exactly that area (no padding), so small print reads well and boxes map back exactly.
-      const scale = Math.min(3, 3000 / Math.max(region.w, region.h))
-      const { blob } = await editor.toImage(ids, { format: "png", background: true, bounds: area, padding: 0, scale })
-      return recognizeWords(blob)
+    readImageText: async (image) => {
+      // Analyse exactly the pixels Gemini saw, not a fresh render including later annotations.
+      const bytes = Uint8Array.from(atob(image.data), c => c.charCodeAt(0))
+      return recognizeWords(new Blob([bytes], { type: image.mimeType }))
     },
     captureSelection: async () => {
       const editor = editorRef.current
@@ -546,3 +540,4 @@ export function AppShell({ board }: AppShellProps = {}) {
     </div>
   )
 }
+

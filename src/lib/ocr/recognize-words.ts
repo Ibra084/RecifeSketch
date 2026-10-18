@@ -8,6 +8,7 @@
  */
 
 import type { InkGrid, OcrResult, OcrWord } from "@/lib/drawing/text-match"
+import { adaptiveInk } from "@/lib/drawing/image-refinement"
 
 type TesseractWorker = Awaited<ReturnType<typeof import("tesseract.js")["createWorker"]>>
 
@@ -22,7 +23,7 @@ function getWorker(): Promise<TesseractWorker> {
 
 /**
  * A map of where the image has ink - anything clearly darker than its paper.
- * The threshold follows the paper's own brightness (the median), so a grey
+ * The threshold follows the local paper brightness, so a grey
  * photo background isn't mistaken for ink. Up to 1000 cells across, and each
  * cell keeps the DARKEST pixel it covers (sampled at twice the grid's
  * resolution), so a thin string or outline isn't averaged away into the paper.
@@ -47,18 +48,18 @@ function inkGrid(bitmap: ImageBitmap, maxCols = 1000): InkGrid | undefined {
       if (v < luma[cell]) luma[cell] = v
     }
   }
-  const median = Float32Array.from(luma).sort()[luma.length >> 1]
-  const threshold = median - 55
-  return { cols, rows, cells: Uint8Array.from(luma, (v) => (v < threshold ? 1 : 0)) }
+  return adaptiveInk(luma, cols, rows)
 }
 
 /** Words in the image with their pixel boxes (and where its ink is), or null if OCR couldn't run (offline, unsupported browser). */
 export async function recognizeWords(image: Blob): Promise<OcrResult | null> {
+  let pixels: OcrResult | null = null
   try {
     const bitmap = await createImageBitmap(image)
     const size = { width: bitmap.width, height: bitmap.height }
     const ink = inkGrid(bitmap)
     bitmap.close()
+    pixels = { ...size, words: [], ...(ink ? { ink } : {}) }
     const tesseract = await getWorker()
     const { data } = await tesseract.recognize(image, {}, { blocks: true })
     const words: OcrWord[] = []
@@ -77,6 +78,7 @@ export async function recognizeWords(image: Blob): Promise<OcrResult | null> {
     }
     return { ...size, words, ...(ink ? { ink } : {}) }
   } catch {
-    return null
+    // Pixel refinement must still work when the OCR language download fails.
+    return pixels
   }
 }

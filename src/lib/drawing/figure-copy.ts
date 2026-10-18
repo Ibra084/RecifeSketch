@@ -47,7 +47,7 @@ const MAX_UPSCALE = 2
  */
 export function copySize(original: Rect, width?: number, nativeWidth?: number): { w: number; h: number } {
   let w = width ?? Math.min(700, Math.max(360, original.w * 1.6))
-  if (nativeWidth !== undefined && nativeWidth > 0) w = Math.min(w, Math.max(120, nativeWidth * MAX_UPSCALE))
+  if (nativeWidth !== undefined && nativeWidth > 0) w = Math.min(w, nativeWidth * MAX_UPSCALE)
   return { w, h: (w * original.h) / original.w }
 }
 

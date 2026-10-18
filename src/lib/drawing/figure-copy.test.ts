@@ -27,6 +27,22 @@ describe("cropFor", () => {
 })
 
 describe("copySize and partOnCopy", () => {
+  it("does not override the native-pixel cap for tiny figures", () => {
+    expect(copySize({ x: 0, y: 0, w: 20, h: 10 }, 600, 20)).toEqual({ w: 40, h: 20 })
+  })
+  it("preserves feature positions through an existing crop and a resized copy", () => {
+    const source = { x: 125.5, y: -40.25, w: 800, h: 400 }
+    const area = { x: 325.5, y: 59.75, w: 200, h: 200 }
+    const crop = cropFor(area, source, { topLeft: { x: .2, y: .1 }, bottomRight: { x: .8, y: .9 } })
+    const copy = { x: 1500, y: 100, w: 320, h: 320 }
+    const feature = { x: 375.5, y: 109.75, w: 50, h: 50 }
+    const mapped = partOnCopy(feature, area, copy)
+    // Full 2000px source: crop x=.35, feature x=.3875; map through the visible copy.
+    const pixelX = .3875 * 2000, cropX = crop.topLeft.x * 2000
+    const cropWidth = (crop.bottomRight.x - crop.topLeft.x) * 2000
+    expect(mapped.x).toBeCloseTo(copy.x + (pixelX - cropX) / cropWidth * copy.w)
+    expect(mapped).toEqual({ x: 1580, y: 180, w: 80, h: 80 })
+  })
   it("enlarges the copy, keeping the figure's shape", () => {
     expect(copySize(figure)).toEqual({ w: 360, h: 450 })
     expect(copySize(figure, 480)).toEqual({ w: 480, h: 600 })

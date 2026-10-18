@@ -24,6 +24,7 @@ import { MATH_SHAPE_TYPE, measureMath, type MathShape } from "./math-shape"
 import { GRAPH_PALETTE, GRAPH_SHAPE_TYPE, type GraphLine, type GraphShape } from "./graph-shape"
 import { toDesmosLatex } from "./desmos-latex"
 import { boxOutline, circleOutline, imageBoxToPage, underlineFor } from "./image-marks"
+import { refineImageBox } from "./image-refinement"
 import { APPARATUS_SHAPE, buildApparatus, placeApparatus } from "./apparatus"
 import { blockOnIncline, inclineGeometry } from "./incline"
 import { hangingMassCentre, pulleyAtCorner, stringPath, tangentPoint, type Wheel } from "./mechanics"
@@ -770,7 +771,7 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
     const region = this.imageRegion
     if (!region) throw new Error("There is no question image to copy a figure from. Draw the diagram with the drawing actions instead.")
     // Each part is snapped onto its drawn outline, so forces start exactly on the printed block.
-    const parts = (action.parts ?? []).map((part) => ({ ...part, box: part.slope ? part.box : snapBoxToInk(part.box, this.imageText?.ink) }))
+    const parts = (action.parts ?? []).map((part) => ({ ...part, box: refineImageBox(part.slope ? part.box : snapBoxToInk(part.box, this.imageText?.ink), this.imageText?.ink) }))
     // Only the figure: the question's sentences are trimmed off and the crop tightened to the ink,
     // but never through the figure's own parts - so the copy can't shrink to a sliver.
     const box = figureCrop(action.box, parts.map((part) => part.box), this.imageText ?? undefined)
@@ -778,7 +779,7 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
     // The photo on the board that the figure is in (the one it overlaps most).
     let photo: { id: TLShapeId; bounds: { x: number; y: number; w: number; h: number }; overlap: number } | undefined
     for (const shape of this.editor.getCurrentPageShapes()) {
-      if (shape.type !== "image" || shape.rotation !== 0) continue
+      if (shape.type !== "image" || this.editor.getShapePageTransform(shape).rotation() !== 0) continue
       const b = this.editor.getShapePageBounds(shape)
       const overlap = b ? figureOverlap(area, b) : 0
       if (b && overlap > 0 && (!photo || overlap > photo.overlap)) photo = { id: shape.id, bounds: { x: b.x, y: b.y, w: b.w, h: b.h }, overlap }
@@ -795,13 +796,18 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
       ? (area.w / photo.bounds.w) * asset.props.w * shownFraction
       : undefined
     const size = copySize(area, action.width, nativeWidth)
+    if (process.env.NODE_ENV === "development") console.info("[image-targeting]", JSON.stringify({
+      requested: action.box, refined: box, region, photo: photo.bounds,
+      nativeWidth, copySize: size,
+      parts: parts.map((part, index) => ({ guessed: action.parts?.[index].box, refined: part.box })),
+    }))
     const tlId = this.track(action.id, "image", "shape", `figure copied from the question${action.label ? ` (${action.label})` : ""}`)
     this.editor.createShapes([{
       id: tlId, type: "image", x: at.x, y: at.y,
       props: {
         assetId: source.props.assetId, w: size.w, h: size.h,
         crop: cropFor(area, photo.bounds, source.props.crop ?? null),
-        playing: true, url: "", flipX: false, flipY: false, altText: "Figure from the question",
+        playing: true, url: "", flipX: source.props.flipX, flipY: source.props.flipY, altText: "Figure from the question",
       },
     }])
     const copy = { x: at.x, y: at.y, w: size.w, h: size.h }
@@ -1018,7 +1024,7 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
   /** A box, circle or underline exactly around something the model found in that image. */
   markImage(action: MarkImageAction): void {
     if (!this.imageRegion) throw new Error("There is no question image on the board to mark. Point at things with arrows and labels instead.")
-    const target = imageBoxToPage(action.box, this.imageRegion)
+    const target = imageBoxToPage(refineImageBox(action.box, this.imageText?.ink), this.imageRegion)
     const color = action.color ?? "red"
     if (action.style === "underline") {
       const { start, end } = underlineFor(target)
@@ -1483,3 +1489,4 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
     return Math.max(requested, Math.ceil(minimum) + 4)
   }
 }
+

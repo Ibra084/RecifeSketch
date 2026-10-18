@@ -12,6 +12,7 @@ import { useId, useState, type InputHTMLAttributes, type ReactNode } from "react
 import { useFormStatus } from "react-dom"
 import { cn } from "cn"
 import { AlertCircle, CheckCircle2, Eye, EyeOff, Lock, Mail, UserRound } from "lucide-react"
+import { PASSWORD_MIN_LENGTH } from "@/lib/auth/identity"
 
 const INPUT_BASE =
   "w-full py-3.5 text-[15px] rounded-2xl border bg-white/50 backdrop-blur-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:bg-white/80 focus:ring-4 transition-all duration-150"
@@ -77,9 +78,12 @@ export function TextField({ label, icon, error, hint, labelAside, trailing, id, 
 
 export function PasswordField(props: Omit<TextFieldProps, "type" | "icon" | "trailing">) {
   const [visible, setVisible] = useState(false)
+  // Every password box gets a hint: entering an existing password, or choosing a new one.
+  const placeholder = props.placeholder ?? (props.autoComplete === "new-password" ? `At least ${PASSWORD_MIN_LENGTH} characters` : "Your password")
   return (
     <TextField
       {...props}
+      placeholder={placeholder}
       type={visible ? "text" : "password"}
       icon="lock"
       trailing={

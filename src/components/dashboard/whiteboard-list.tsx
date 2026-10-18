@@ -97,7 +97,7 @@ function WhiteboardRow({ board, onDelete }: { board: WhiteboardSummary; onDelete
           </button>
         </form>
       ) : (
-        <Link href={`/board/${board.id}`} className="min-w-0 flex-1 rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40">
+        <Link href={`/board/${board.id}`} prefetch={false} className="min-w-0 flex-1 rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40">
           <span className="block truncate text-[15px] font-medium text-gray-900">{shownTitle}</span>
           <span className="block text-[12.5px] text-gray-400">
             <RelativeTime iso={board.updatedAt} prefix="Edited " />

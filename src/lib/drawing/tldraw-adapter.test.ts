@@ -41,6 +41,7 @@ function fixture() {
       return { x: s.x + (points.length ? Math.min(...points.map(p => p.x)) : 0),
         y: s.y + (points.length ? Math.min(...points.map(p => p.y)) : 0), w: Number(s.props.w ?? 100), h: Number(s.props.h ?? 0) }
     },
+    getShapeAncestors: () => [],
     getPointInParentSpace: (_shape: unknown, point: { x: number; y: number }) => point,
     run: (fn: () => void) => fn(),
     getCurrentTheme: () => ({ fontSize: 16, lineHeight: 1.35 }),
@@ -223,5 +224,27 @@ describe("tldraw adapter regression contracts (editor stub)", () => {
     editor.createShapes([{ id: "shape:t", type: "text", x: 0, y: 0, meta: { recifeObjectId: "t", recifeKind: "text" }, props: { richText: { text: "Before" } } }])
     editor.updateShape({ id: "shape:t", props: { richText: { text: "x".repeat(201) } } })
     expect(adapter.summarizeObjects()[0]).toMatchObject({ label: "x".repeat(200), h: 1 })
+  })
+  it("moves a shape placed over writing to the nearest clear spot (a ball drawn on the working)", () => {
+    const { adapter, editor } = fixture()
+    adapter.beginPlan()
+    adapter.writeEquation({ type: "write_equation", id: "eq", position: { x: 0, y: 0 }, expression: "T = M(g - a) = 7800 N" })
+    adapter.drawMass({ type: "draw_mass", id: "ball", shape: "particle", position: { x: 40, y: 0 } })
+    const eq = editor.getShapePageBounds("shape:eq")!
+    const ball = editor.getShapePageBounds("shape:ball")!
+    expect(ball.x >= eq.x + eq.w || ball.y >= eq.y + eq.h || ball.x + ball.w <= eq.x || ball.y + ball.h <= eq.y).toBe(true)
+  })
+  it("leaves a box drawn around an answer where it was asked to go", () => {
+    const { adapter, shapes } = fixture()
+    adapter.writeEquation({ type: "write_equation", id: "ans", position: { x: 20, y: 20 }, expression: "x = 4" })
+    adapter.createShape({ type: "create_shape", id: "frame", shape: "rectangle", x: 0, y: 0, w: 200, h: 80 })
+    expect(shapes.get("shape:frame")).toMatchObject({ x: 0, y: 0 })
+  })
+  it("keeps a label written just left of the drawing on that side (the primary coil of a transformer)", () => {
+    const { adapter, shapes } = fixture()
+    adapter.beginPlan()
+    adapter.createShape({ type: "create_shape", id: "core", shape: "rectangle", x: 7500, y: -400, w: 1000, h: 600 })
+    adapter.writeText({ type: "write_text", id: "primary", position: { x: 7400, y: -450 }, text: "Primary (Input)" })
+    expect(shapes.get("shape:primary")).toMatchObject({ x: 7400, y: -450 })
   })
 })

@@ -8,23 +8,25 @@ import { WhiteboardList } from "@/components/dashboard/whiteboard-list"
 import { NoticeBanner } from "@/components/auth/fields"
 import { requireUser } from "@/lib/auth/session"
 import { listWhiteboards, type WhiteboardSummary } from "@/lib/whiteboards/data"
-import { createWhiteboardAction } from "./actions"
+import { NewWhiteboardButton } from "@/components/dashboard/new-whiteboard-button"
+import { MistakesLink } from "@/components/dashboard/mistake-memory"
+import { listMistakes } from "@/lib/mistakes/data"
 
 export const metadata: Metadata = { title: "Your whiteboards · Recife Sketch" }
 
 const NOTICES: Record<string, string> = {
   welcome: "You're all set. Your new password is saved.",
   "password-updated": "Your password has been updated.",
+  "practice-failed": "Practice couldn't be started just then. Please try again.",
 }
 
 function NewWhiteboardCard() {
   return (
-    <form action={createWhiteboardAction}>
-      <button
-        type="submit"
-        className="card-hover btn-press group flex w-full items-center gap-4 rounded-2xl border border-gray-100 bg-white p-5 text-left"
-        style={{ boxShadow: "var(--shadow-soft)" }}
-      >
+    <NewWhiteboardButton
+      className="card-hover btn-press group flex min-h-[88px] w-full items-center gap-4 rounded-2xl border border-gray-100 bg-white p-5 text-left text-[15px] font-semibold text-gray-500 disabled:cursor-wait"
+      style={{ boxShadow: "var(--shadow-soft)" }}
+      pendingLabel="Creating your whiteboard…"
+    >
         <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-blue-600 text-white shadow-[0_6px_16px_-6px_rgba(37,99,235,0.6)] transition-transform duration-150 group-hover:scale-105">
           <Plus className="h-5 w-5" strokeWidth={2.25} aria-hidden />
         </span>
@@ -33,8 +35,7 @@ function NewWhiteboardCard() {
           <span className="block text-sm text-gray-400">Draw a problem, or ask Recife to explain a topic.</span>
         </span>
         <ArrowRight className="h-4 w-4 shrink-0 text-gray-300 transition-all duration-150 group-hover:translate-x-0.5 group-hover:text-blue-600" aria-hidden />
-      </button>
-    </form>
+    </NewWhiteboardButton>
   )
 }
 
@@ -42,6 +43,8 @@ function RecentCard({ board }: { board: WhiteboardSummary }) {
   return (
     <Link
       href={`/board/${board.id}`}
+      // Never prefetch a board: the payload is the whole drawing, and a prefetched copy can be stale.
+      prefetch={false}
       className="card-hover group flex flex-col rounded-2xl border border-gray-100 bg-white p-4 outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
     >
       {/* A dotted "board" thumbnail; boards themselves aren't rendered here. */}
@@ -64,7 +67,7 @@ function RecentCard({ board }: { board: WhiteboardSummary }) {
 }
 
 async function DashboardContent({ searchParams }: { searchParams: PageProps<"/dashboard">["searchParams"] }) {
-  const [user, boards, params] = await Promise.all([requireUser(), listWhiteboards(), searchParams])
+  const [user, boards, params, mistakes] = await Promise.all([requireUser(), listWhiteboards(), searchParams, listMistakes()])
   const notice = NOTICES[String(params.notice ?? "")]
   const recent = boards.slice(0, 3)
 
@@ -88,6 +91,9 @@ async function DashboardContent({ searchParams }: { searchParams: PageProps<"/da
       )}
 
       <NewWhiteboardCard />
+
+      {/* A pointer to the Mistakes tab (hidden until the Mistake Memory table exists). */}
+      {mistakes && <MistakesLink mistakes={mistakes} />}
 
       {boards.length === 0 ? (
         <div className="mt-8 rounded-2xl border border-dashed border-gray-200 px-6 py-10 text-center">

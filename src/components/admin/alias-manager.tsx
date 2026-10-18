@@ -14,6 +14,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { RelativeTime } from "@/components/dashboard/relative-time"
+import { BulkAliasCreator } from "./bulk-alias-creator"
 import { createAliasAction, deleteAliasAction, resetAliasPasswordAction, type AliasActionResult } from "@/app/admin/actions"
 import type { AliasAccount } from "@/lib/auth/alias-admin"
 import { isValidAlias, normalizeAlias } from "@/lib/auth/identity"
@@ -177,6 +178,8 @@ export function AliasManager({ aliases }: { aliases: AliasAccount[] }) {
         </div>
       )}
       {issued && <IssuedCard issued={issued} onClose={() => setIssued(null)} />}
+
+      <BulkAliasCreator />
 
       <section aria-labelledby="aliases-heading">
         <div className="mb-3 mt-4 flex flex-wrap items-center justify-between gap-3">

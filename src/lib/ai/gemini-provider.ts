@@ -1,6 +1,11 @@
 import type { AIConfig } from "./config"
 import { buildRepairPrompt, buildTeachingPrompt } from "./prompt"
-import type { AIProvider, TeachingPlanFailure, TeachingPlanRequest, TeachingPlanResult } from "./provider"
+import type {
+  AIProvider, CheckWorkReading, CheckWorkRequest, LocatePartsRequest, LocatePartsResult, TeachingPlanFailure, TeachingPlanRequest, TeachingPlanResult,
+} from "./provider"
+import { buildLocatePrompt, LOCATE_MAX_OUTPUT_TOKENS, LOCATE_TIMEOUT_MS, parseLocateResponse } from "./locate-parts"
+import { buildCheckWorkPrompt, CHECK_WORK_MAX_OUTPUT_TOKENS } from "../mistakes/check-prompt"
+import { checkWorkModelSchema } from "../mistakes/schema"
 import { isTransientFailure, MAX_TRANSIENT_RETRIES, TRANSIENT_RETRY_DELAY_MS } from "./retry"
 import { parseTeachingPlanResponse } from "./response-parser"
 import { estimateUsage, usageFromMeasuredTokens, type UsageEstimate } from "./usage-tracker"
@@ -90,7 +95,8 @@ export class GeminiProvider implements AIProvider {
         maxOutputTokens: config.maxOutputTokens,
         deadline,
         signal,
-        image: request.source?.image,
+        // The question first (every box refers to it), then the student's working, if any.
+        images: [request.source?.image, request.source?.work?.image].filter((image) => image !== undefined),
       })
       if (!callResult.ok) return callResult
 
@@ -115,6 +121,64 @@ export class GeminiProvider implements AIProvider {
     }
 
     return { ok: false, failure: { kind: "invalid_output", detail: "exhausted retries" } }
+  }
+
+  /**
+   * "Check my work": reads the student's working from the cropped image.
+   * One bounded request (transient retries only, no repair loop); the answer
+   * is parsed leniently, and the maths itself is checked afterwards by the
+   * deterministic checker - so an odd reading becomes "I'm not sure", never
+   * a made-up correction.
+   */
+  async checkWork(request: CheckWorkRequest, signal?: AbortSignal): Promise<CheckWorkReading> {
+    const apiKey = this.options.config.gemini.apiKey
+    if (!apiKey) return { ok: false, failure: { kind: "missing_api_key" } }
+    const result = await this.callGeminiWithTransientRetry({
+      apiKey,
+      model: this.options.config.gemini.model,
+      prompt: buildCheckWorkPrompt(request.practicePrompt),
+      maxOutputTokens: CHECK_WORK_MAX_OUTPUT_TOKENS,
+      deadline: Date.now() + Math.min(this.options.config.requestTimeoutMs, 30_000),
+      signal,
+      images: [request.image],
+      thinkingLevel: "low",
+    })
+    if (!result.ok) return result
+    let json: unknown
+    try {
+      json = JSON.parse(result.text.trim().replace(/^```(?:json)?\s*|\s*```$/g, ""))
+    } catch {
+      return { ok: false, failure: { kind: "invalid_output", detail: "check-work: not JSON" } }
+    }
+    const reading = checkWorkModelSchema.safeParse(json)
+    if (!reading.success) return { ok: false, failure: { kind: "invalid_output", detail: "check-work: wrong shape" } }
+    return { ok: true, reading: reading.data, usage: result.usage }
+  }
+
+  /**
+   * The zoomed-in second look at a copied figure. Kept deliberately cheap:
+   * one small image, a short prompt, minimal thinking, a short JSON answer,
+   * a single attempt with no repair loop, and a short deadline - if it fails,
+   * the lesson simply keeps the first guesses.
+   */
+  async locateParts(request: LocatePartsRequest, signal?: AbortSignal): Promise<LocatePartsResult> {
+    const apiKey = this.options.config.gemini.apiKey
+    if (!apiKey) return { ok: false, failure: { kind: "missing_api_key" } }
+    const prompt = buildLocatePrompt(request.parts)
+    const result = await this.callGemini({
+      apiKey,
+      model: this.options.config.gemini.model,
+      prompt,
+      maxOutputTokens: LOCATE_MAX_OUTPUT_TOKENS,
+      deadline: Date.now() + LOCATE_TIMEOUT_MS,
+      signal,
+      images: [request.image],
+      thinkingLevel: "minimal",
+    })
+    if (!result.ok) return result
+    const parsed = parseLocateResponse(result.text, request.parts.map((p) => p.id))
+    if (!parsed) return { ok: false, failure: { kind: "invalid_output", detail: "locate: unreadable answer" } }
+    return { ok: true, ...parsed, usage: result.usage }
   }
 
   /**
@@ -154,8 +218,11 @@ export class GeminiProvider implements AIProvider {
     /** Epoch ms by which this call must finish (shared across retries). */
     deadline: number
     signal?: AbortSignal
-    image?: QuestionSource["image"]
+    images?: NonNullable<QuestionSource["image"]>[]
+    /** Defaults to the teaching-plan settings; the parts locator asks for less thinking. */
+    thinkingLevel?: "minimal" | "low" | "high"
   }): Promise<GeminiCallResult> {
+    const images = args.images ?? []
     const remainingMs = args.deadline - Date.now()
     if (remainingMs <= 0) return { ok: false, failure: { kind: "timeout" } }
     const fetchImpl = this.options.fetchImpl ?? fetch
@@ -172,16 +239,18 @@ export class GeminiProvider implements AIProvider {
         body: JSON.stringify({
           contents: [{ role: "user", parts: [
             { text: args.prompt },
-            ...(args.image ? [{ inlineData: { mimeType: args.image.mimeType, data: args.image.data } }] : []),
+            ...images.map((image) => ({ inlineData: { mimeType: image.mimeType, data: image.data } })),
           ] }],
           generationConfig: {
             maxOutputTokens: args.maxOutputTokens,
             temperature: 0.4,
             responseMimeType: "application/json",
+            // Read images in full detail: locating a diagram's parts needs it. (Text-only requests pay nothing extra.)
+            ...(images.length > 0 ? { mediaResolution: "MEDIA_RESOLUTION_HIGH" } : {}),
             // Gemini 3 uses thinkingLevel. Other configured model families
             // retain their provider defaults rather than receiving an invalid budget.
             ...(/^gemini-3[.-]/.test(args.model) ? {
-              thinkingConfig: { thinkingLevel: this.options.config.gemini.thinkingLevel ?? "low" },
+              thinkingConfig: { thinkingLevel: args.thinkingLevel ?? this.options.config.gemini.thinkingLevel ?? "low" },
             } : {}),
           },
         }),

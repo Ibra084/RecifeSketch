@@ -2,16 +2,18 @@
 
 import dynamic from "next/dynamic"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Box, renderPlaintextFromRichText, useValue, type Editor, type TLShapeId } from "tldraw"
+import { Box, createShapeId, renderPlaintextFromRichText, toRichText, useValue, type Editor, type TLShapeId } from "tldraw"
 import { RecifeWordmark } from "@/components/brand/recife-wordmark"
 import { BoardHeader } from "@/components/whiteboard/board-header"
 import type { SavedBoard, SaveStatus } from "@/components/whiteboard/board-persistence"
+import { useDeviceFlag } from "@/components/whiteboard/use-device-flag"
 import { AiCompanion, type CompanionState, type TutorSpeech } from "@/components/companion/ai-companion"
-import { readQuestionImageBlob } from "@/components/companion/question-image"
+import { CONTEXT_IMAGE, QUESTION_IMAGE, readImageUrl, readQuestionImageBlob } from "@/components/companion/question-image"
 import { useCompanionOrb } from "@/components/companion/use-companion-orb"
 import { useTutor, type WhiteboardController } from "@/components/companion/use-tutor"
 import { actionFocusRect } from "@/lib/drawing/action-focus-point"
-import { focusedStudentWork } from "@/lib/drawing/authorship"
+import { focusedStudentWork, isStudentShape } from "@/lib/drawing/authorship"
+import { placeLesson, type Obstacle } from "@/lib/drawing/lesson-placement"
 import { DrawingEngine } from "@/lib/drawing/engine"
 import { DrawingPlayer } from "@/lib/drawing/playback/player"
 import { TldrawShapeAnimator } from "@/lib/drawing/playback/tldraw-animator"
@@ -37,6 +39,29 @@ const WhiteboardSection = dynamic(
     ),
   }
 )
+
+/** Render scale that gives an exported area about `maxSide` pixels on its long side (never absurdly large or small). */
+function exportPixelRatio(bounds: { w: number; h: number }, maxSide: number): number {
+  return Math.min(4, Math.max(0.25, maxSide / Math.max(1, bounds.w, bounds.h)))
+}
+
+/**
+ * What a new lesson must not draw over: everything on the board except what
+ * the lesson itself deletes. The student's own work, the question and anything
+ * selected may be marked directly (an outline, an arrow pointing at it).
+ */
+function boardObstacles(editor: Editor, sequence: DrawingSequence): Obstacle[] {
+  const deleted = new Set(sequence.flatMap((step) => step.actions)
+    .flatMap((action) => (action.type === "delete_object" ? [createShapeId(action.id)] : [])))
+  const selected = new Set(editor.getSelectedShapeIds())
+  return editor.getCurrentPageShapes().flatMap((shape) => {
+    if (deleted.has(shape.id)) return []
+    const b = editor.getShapePageBounds(shape)
+    if (!b || (b.w === 0 && b.h === 0)) return []
+    const annotatable = isStudentShape(shape) || Boolean(shape.meta.recifeQuestionSource) || selected.has(shape.id)
+    return [{ x: b.x, y: b.y, w: b.w, h: b.h, annotatable }]
+  })
+}
 
 /** How long the orb lingers near the last explanation before drifting home. */
 const RETURN_HOME_DELAY_MS = 2500
@@ -73,10 +98,35 @@ type StepHandler = (sequence: DrawingSequence, stepIndex: number, text: string |
 interface AppShellProps {
   /** A saved whiteboard (from the dashboard). Without one, the board persists locally only. */
   board?: SavedBoard & { title: string }
+  /** Mistake Memory practice: the question this practice board is for. */
+  practice?: { prompt: string }
 }
 
-export function AppShell({ board }: AppShellProps = {}) {
+/**
+ * Puts a practice question on its board, once: a locked text shape marked as
+ * question material (so "Check my work" reads only the student's working).
+ */
+function placePracticeQuestion(editor: Editor, prompt: string) {
+  if (editor.getCurrentPageShapes().some((shape) => shape.meta.recifePracticeQuestion)) return
+  const view = editor.getViewportPageBounds()
+  editor.createShapes([{
+    type: "text",
+    x: view.x + 80,
+    y: view.y + 80,
+    isLocked: true,
+    meta: { recifePracticeQuestion: true, recifeQuestionSource: true },
+    props: {
+      richText: toRichText(`Practice: ${prompt}\nWrite your working below, select it, then tap the orb and choose "Check my work".`),
+      size: "m",
+      font: "sans",
+      autoSize: true,
+    },
+  }])
+}
+
+export function AppShell({ board, practice }: AppShellProps = {}) {
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("saved")
+  const [stylePanelHidden, setStylePanelHidden] = useDeviceFlag("recife-sketch-hide-style-panel")
   // The engine and animator live for the whiteboard's whole mounted
   // lifetime (not recreated per question), so object ids stay addressable
   // across turns - a fresh DrawingPlayer is created per `play()` call.
@@ -218,8 +268,8 @@ export function AppShell({ board }: AppShellProps = {}) {
       if (!editor || !adapter || !("id" in drawn) || drawn.type === "delete_object") return
       const bounds = adapter.getObjectBounds(drawn.id)
       if (!bounds) return
-      // Bring it into view with as little camera movement as possible (none if it's already visible).
-      const move = cameraMoveFor(editor.getViewportPageBounds(), bounds, 60 / editor.getZoomLevel())
+      // The screen follows the writing: zoom in if it's too small to read, re-centre if it drifts off-centre.
+      const move = cameraMoveFor(editor.getViewportPageBounds(), bounds, 60 / editor.getZoomLevel(), editor.getZoomLevel())
       const duration = prefersReducedMotion() ? 0 : FOLLOW_CAMERA_MS
       if (move.kind === "pan") editor.centerOnPoint(move.center, { animation: { duration } })
       if (move.kind === "fit") editor.zoomToBounds(move.bounds, { targetZoom: 1, animation: { duration } })
@@ -248,10 +298,13 @@ export function AppShell({ board }: AppShellProps = {}) {
 
   const [boardController] = useState<WhiteboardController>(() => ({
     isReady: () => engineRef.current !== null && animatorRef.current !== null,
-    play: async (sequence, stepCommentary, imageRegion, imageText) => {
+    play: async (planned, stepCommentary, imageRegion, imageText) => {
       const engine = engineRef.current
       const animator = animatorRef.current
-      if (!engine || !animator) throw new Error("Whiteboard not ready")
+      const editor = editorRef.current
+      if (!engine || !animator || !editor) throw new Error("Whiteboard not ready")
+      // Never draw over what's already on the board: slide the lesson into clear space first.
+      const sequence = placeLesson(planned, boardObstacles(editor, planned)).steps
       adapterRef.current?.setImageRegion(imageRegion ?? null)
       adapterRef.current?.beginPlan()
       adapterRef.current?.setImageText(imageText ?? null)
@@ -333,9 +386,19 @@ export function AppShell({ board }: AppShellProps = {}) {
     exportQuestionImage: async (id) => {
       const editor = editorRef.current
       if (!editor) throw new Error("Whiteboard not ready")
-      // No padding: the image must cover exactly the shape's bounds, or the AI's marks on it land shifted.
-      const { blob } = await editor.toImage([id], { format: "jpeg", quality: 0.85, background: true, padding: 0 })
-      const image = await readQuestionImageBlob(blob)
+      const shape = editor.getShape(id)
+      let image: Awaited<ReturnType<typeof readQuestionImageBlob>>
+      if (shape?.type === "image" && shape.props.assetId && !shape.props.flipX && !shape.props.flipY && editor.getShapePageTransform(shape).rotation() === 0) {
+        // The photo's own file, at its own resolution (with the shape's crop) - never a re-render of the
+        // board, which would be limited to its on-screen size. Same extent as the shape, so marks map exactly.
+        const url = await editor.resolveAssetUrl(shape.props.assetId, { shouldResolveToOriginal: true })
+        if (!url) throw new Error("Couldn't read the question image")
+        image = await readImageUrl(url, { ...QUESTION_IMAGE, crop: shape.props.crop ?? null })
+      } else {
+        // No padding: the image must cover exactly the shape's bounds, or the AI's marks on it land shifted.
+        const { blob } = await editor.toImage([id], { format: "png", background: true, padding: 0, pixelRatio: 2 })
+        image = await readQuestionImageBlob(blob)
+      }
       markQuestionSourceAttached(editor, id)
       return image
     },
@@ -370,33 +433,29 @@ export function AppShell({ board }: AppShellProps = {}) {
       if (!region || objects.length === 0) return undefined
       return { region: { x: region.x, y: region.y, w: Math.max(1, region.w), h: Math.max(1, region.h) }, objects }
     },
-    readImageText: async (region) => {
-      const editor = editorRef.current
-      if (!editor) return null
-      const area = new Box(region.x, region.y, region.w, region.h)
-      const ids = editor.getCurrentPageShapes().filter((shape) => editor.getShapePageBounds(shape)?.collides(area)).map((shape) => shape.id)
-      if (ids.length === 0) return null
-      // A sharp, larger render of exactly that area (no padding), so small print reads well and boxes map back exactly.
-      const scale = Math.min(3, 3000 / Math.max(region.w, region.h))
-      const { blob } = await editor.toImage(ids, { format: "png", background: true, bounds: area, padding: 0, scale })
-      return recognizeWords(blob)
+    readImageText: async (image) => {
+      // Analyse exactly the pixels Gemini saw, not a fresh render including later annotations.
+      const bytes = Uint8Array.from(atob(image.data), c => c.charCodeAt(0))
+      return recognizeWords(new Blob([bytes], { type: image.mimeType }))
     },
     captureSelection: async () => {
       const editor = editorRef.current
       const ids = editor?.getSelectedShapeIds() ?? []
       const bounds = editor?.getSelectionPageBounds()
       if (!editor || ids.length === 0 || !bounds) return undefined
-      // Exactly the selected area, no padding, so marks the tutor places on this image land precisely.
+      // Exactly the selected area, no padding, so marks the tutor places on this image land precisely -
+      // rendered sharp (about 2048px on its long side), not at whatever size it happens to be on screen.
       const { blob } = await editor.toImage([...ids], {
-        format: "jpeg", quality: 0.85, background: true, bounds: new Box(bounds.x, bounds.y, bounds.w, bounds.h), padding: 0,
+        format: "png", background: true, bounds: new Box(bounds.x, bounds.y, bounds.w, bounds.h), padding: 0,
+        pixelRatio: exportPixelRatio(bounds, QUESTION_IMAGE.maxSide!),
       })
       return {
         kind: "selection",
-        image: await readQuestionImageBlob(blob),
+        image: await readQuestionImageBlob(blob, QUESTION_IMAGE),
         region: { x: bounds.x, y: bounds.y, w: Math.max(1, bounds.w), h: Math.max(1, bounds.h) },
       }
     },
-    captureStudentWork: async (alsoInclude) => {
+    captureStudentWork: async (alsoInclude, detail) => {
       const editor = editorRef.current
       if (!editor) return undefined
       const viewportBounds = editor.getViewportPageBounds()
@@ -415,14 +474,15 @@ export function AppShell({ board }: AppShellProps = {}) {
       if (!bounds) return undefined
       // Export exactly these page bounds (no padding), so the image's pixels map
       // linearly onto `region` - the prompt's fraction-to-coordinate formula relies on it.
+      const options = detail === "context" ? CONTEXT_IMAGE : QUESTION_IMAGE
       const { blob } = await editor.toImage(ids, {
-        format: "jpeg",
-        quality: 0.85,
+        format: "png",
         background: true,
         bounds: new Box(bounds.x, bounds.y, bounds.w, bounds.h),
         padding: 0,
+        pixelRatio: exportPixelRatio(bounds, options.maxSide!),
       })
-      const image = await readQuestionImageBlob(blob)
+      const image = await readQuestionImageBlob(blob, options)
       const shapes = studentIds.slice(0, 80).flatMap(id => {
         const shape = editor.getShape(id)
         const b = editor.getShapePageBounds(id)
@@ -432,7 +492,12 @@ export function AppShell({ board }: AppShellProps = {}) {
     },
   }))
 
-  const tutor = useTutor(boardController)
+  const tutor = useTutor(boardController, { boardId: board?.id })
+
+  const practicePrompt = practice?.prompt
+  useEffect(() => {
+    if (mountedEditor && practicePrompt) placePracticeQuestion(mountedEditor, practicePrompt)
+  }, [mountedEditor, practicePrompt])
 
   const companionState: CompanionState =
     tutor.phase === "thinking" ? "thinking"
@@ -455,7 +520,14 @@ export function AppShell({ board }: AppShellProps = {}) {
   return (
     <div className="flex h-dvh w-full flex-col bg-surface-subtle">
       {board ? (
-        <BoardHeader title={board.title} status={saveStatus} />
+        <BoardHeader
+          boardId={board.id}
+          title={board.title}
+          status={saveStatus}
+          editTitleOnOpen={board.snapshot === null && board.title === "Untitled whiteboard"}
+          stylePanelHidden={stylePanelHidden}
+          onToggleStylePanel={() => setStylePanelHidden(!stylePanelHidden)}
+        />
       ) : (
         <header className="flex h-12 shrink-0 items-center border-b border-border-subtle bg-surface px-4">
           <RecifeWordmark />
@@ -463,7 +535,12 @@ export function AppShell({ board }: AppShellProps = {}) {
       )}
 
       <main ref={mainRef} className="relative flex-1 overflow-hidden">
-        <WhiteboardSection onEditorMount={handleEditorMount} board={board} onSaveStatus={setSaveStatus} />
+        <WhiteboardSection
+          onEditorMount={handleEditorMount}
+          board={board}
+          onSaveStatus={setSaveStatus}
+          hideStylePanel={Boolean(board) && stylePanelHidden}
+        />
         {mountedEditor && viewport && orb.position && (
           <AiCompanion
             position={orb.position}
@@ -485,9 +562,15 @@ export function AppShell({ board }: AppShellProps = {}) {
             onClearSelection={() => mountedEditor?.selectNone()}
             hasQuestionSource={tutor.hasQuestionSource}
             onClearQuestionSource={tutor.clearQuestionSource}
+            suggestions={tutor.suggestions}
+            onCheckWork={() => void tutor.checkWork()}
+            pendingMistake={tutor.pendingMistake}
+            onSaveMistake={() => void tutor.saveMistake()}
+            onDismissMistake={tutor.dismissMistake}
           />
         )}
       </main>
     </div>
   )
 }
+

@@ -90,6 +90,82 @@ export async function createAliasAccount(admin: SupabaseClient, rawAlias: string
   return { alias, password }
 }
 
+// ─── Bulk creation (a whole class at once) ───────────────────────────────────
+
+/** Most aliases created in one go - a few classes' worth, without tying the server up. */
+export const MAX_BULK_ALIASES = 200
+
+/**
+ * A numbered set of aliases, e.g. ("Maths7B", 30) -> maths7b-01 … maths7b-30.
+ * Numbers are zero-padded to the same width so they sort in order.
+ */
+export function aliasSeries(rawPrefix: string, count: number, start = 1): string[] {
+  const prefix = normalizeAlias(rawPrefix).replace(/[._-]+$/, "")
+  if (!Number.isInteger(count) || count < 1 || count > MAX_BULK_ALIASES) {
+    throw new AliasAdminError(`Choose between 1 and ${MAX_BULK_ALIASES} accounts.`)
+  }
+  if (!Number.isInteger(start) || start < 0 || start > 99999) throw new AliasAdminError("Start from a number between 0 and 99999.")
+  const width = Math.max(2, String(start + count - 1).length)
+  const aliases = Array.from({ length: count }, (_, i) => `${prefix}-${String(start + i).padStart(width, "0")}`)
+  if (!prefix || !aliases.every(isValidAlias)) {
+    throw new AliasAdminError("Use a short prefix of letters and numbers, e.g. maths7b.")
+  }
+  return aliases
+}
+
+/** Reads a pasted list (one per line, or separated by commas/spaces): normalised, de-duplicated, invalid ones reported. */
+export function parseAliasList(text: string): { aliases: string[]; invalid: string[] } {
+  const seen = new Set<string>()
+  const aliases: string[] = []
+  const invalid: string[] = []
+  for (const raw of text.split(/[\s,;]+/)) {
+    if (!raw) continue
+    const alias = normalizeAlias(raw)
+    if (!isValidAlias(alias)) invalid.push(raw)
+    else if (!seen.has(alias)) {
+      seen.add(alias)
+      aliases.push(alias)
+    }
+  }
+  return { aliases, invalid }
+}
+
+export type BulkAliasResult = { alias: string; password: string } | { alias: string; error: string }
+
+/**
+ * Creates many alias accounts. The existing accounts are read once (not once
+ * per alias); aliases already taken are reported and skipped rather than
+ * failing the batch. Each new account gets its own temporary password.
+ */
+export async function createAliasAccounts(admin: SupabaseClient, rawAliases: readonly string[], aliasDomain: string): Promise<BulkAliasResult[]> {
+  if (rawAliases.length === 0) throw new AliasAdminError("Add at least one alias.")
+  if (rawAliases.length > MAX_BULK_ALIASES) throw new AliasAdminError(`At most ${MAX_BULK_ALIASES} accounts at a time.`)
+  const taken = new Set((await allUsers(admin)).map((u) => u.email))
+  const results: BulkAliasResult[] = []
+  const seen = new Set<string>()
+  for (const raw of rawAliases) {
+    const alias = normalizeAlias(raw)
+    if (!isValidAlias(alias)) { results.push({ alias: raw, error: "Not a valid alias" }); continue }
+    if (seen.has(alias)) continue
+    seen.add(alias)
+    const email = aliasToEmail(alias, aliasDomain)
+    if (taken.has(email)) { results.push({ alias, error: "Already taken" }); continue }
+    const password = temporaryPassword()
+    const { error } = await admin.auth.admin.createUser({
+      email,
+      password,
+      email_confirm: true,
+      app_metadata: { account_type: "alias", must_change_password: true },
+    })
+    if (error) results.push({ alias, error: error.message })
+    else {
+      taken.add(email)
+      results.push({ alias, password })
+    }
+  }
+  return results
+}
+
 /** Issues a new temporary password and signs the student out everywhere. */
 export async function resetAliasPassword(admin: SupabaseClient, rawAlias: string, aliasDomain: string) {
   const alias = parseAlias(rawAlias)
@@ -105,14 +181,27 @@ export async function resetAliasPassword(admin: SupabaseClient, rawAlias: string
   return { alias, password }
 }
 
-/** Deletes the alias account; its whiteboards go with it (ON DELETE CASCADE). */
+/** Deletes the alias account; its whiteboards go with it (ON DELETE CASCADE), and its stored images are removed. */
 export async function deleteAliasAccount(admin: SupabaseClient, rawAlias: string, aliasDomain: string) {
   const alias = parseAlias(rawAlias)
   const user = await findAliasUser(admin, alias, aliasDomain)
   if (!user) throw new AliasAdminError(`No student alias "${alias}".`)
+  await removeStoredImages(admin, user.id).catch(() => undefined)
   const { error } = await admin.auth.admin.deleteUser(user.id)
   if (error) throw new AliasAdminError(error.message)
   return { alias }
+}
+
+/** The student's whiteboard images (bucket and layout as in src/lib/whiteboards/images.ts). */
+async function removeStoredImages(admin: SupabaseClient, userId: string): Promise<void> {
+  const bucket = admin.storage.from("board-images")
+  const { data: boards } = await bucket.list(userId, { limit: 1000 })
+  for (const board of boards ?? []) {
+    const folder = `${userId}/${board.name}`
+    const { data: files } = await bucket.list(folder, { limit: 1000 })
+    const paths = (files ?? []).map((file) => `${folder}/${file.name}`)
+    if (paths.length > 0) await bucket.remove(paths)
+  }
 }
 
 /** Grants or removes the admin role on a personal (email) account. */

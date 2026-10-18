@@ -2,6 +2,7 @@ import type { TutorContext } from "./context"
 import type { TeachingPlan } from "./teaching-protocol"
 import type { UsageEstimate } from "./usage-tracker"
 import type { QuestionSource } from "./question-source"
+import type { CheckWorkModelOutput } from "../mistakes/schema"
 
 /**
  * The provider seam: everything downstream (the pipeline, the API route)
@@ -39,6 +40,39 @@ export interface TeachingPlanRequest {
   context?: TutorContext
 }
 
+/** A box in an image: [ymin, xmin, ymax, xmax] on a 0-1000 scale of that image. */
+export type ImageBox = [number, number, number, number]
+
+/**
+ * The "second look" at a copied figure: the figure alone (cropped from the
+ * question), and the parts the lesson attaches things to. Returns each part's
+ * tight box in THAT cropped image - far more precise than locating them in the
+ * whole question, where the figure is only a small part of the picture.
+ */
+export interface LocatePartsRequest {
+  image: NonNullable<QuestionSource["image"]>
+  parts: { id: string; guess?: ImageBox }[]
+}
+
+export type LocatePartsResult =
+  | { ok: true; figure?: ImageBox; parts: { id: string; box: ImageBox }[]; usage: UsageEstimate }
+  | { ok: false; failure: TeachingPlanFailure }
+
+/** "Check my work": the AI reads the student's working from the image (correctness is decided elsewhere). */
+export interface CheckWorkRequest {
+  image: NonNullable<QuestionSource["image"]>
+  /** Set when the student is answering a Mistake Memory practice question. */
+  practicePrompt?: string
+}
+
+export type CheckWorkReading =
+  | { ok: true; reading: CheckWorkModelOutput; usage: UsageEstimate }
+  | { ok: false; failure: TeachingPlanFailure }
+
 export interface AIProvider {
+  /** Optional: without it, "Check my work" reports that checking isn't available. */
+  checkWork?(request: CheckWorkRequest, signal?: AbortSignal): Promise<CheckWorkReading>
   generateTeachingPlan(request: TeachingPlanRequest, signal?: AbortSignal): Promise<TeachingPlanResult>
+  /** Optional: providers that can't do it simply leave the first guesses in place. */
+  locateParts?(request: LocatePartsRequest, signal?: AbortSignal): Promise<LocatePartsResult>
 }

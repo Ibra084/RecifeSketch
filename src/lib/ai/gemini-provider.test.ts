@@ -32,6 +32,28 @@ describe("GeminiProvider deadline", () => {
     }
   })
 
+  it("sends the question image first in full detail, then the student's working, and no detail setting without images", async () => {
+    const bodies: { contents: { parts: Record<string, unknown>[] }[]; generationConfig: Record<string, unknown> }[] = []
+    const plan = { concept: "Pulleys", level: "ks4", steps: [{ commentary: "Look at the masses.", actions: [
+      { type: "create_shape", id: "m", shape: "ellipse", x: 0, y: 0, w: 40, h: 40 },
+    ] }] }
+    const provider = new GeminiProvider({ config: loadAIConfig({ GEMINI_API_KEY: "k" }), fetchImpl: async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)))
+      return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(plan) }] } }] }))
+    } })
+    const question = { mimeType: "image/png" as const, data: "question-image", width: 733, height: 669 }
+    const working = { mimeType: "image/jpeg" as const, data: "working-image", width: 900, height: 400 }
+    const region = { x: 0, y: 0, w: 733, h: 669 }
+    await provider.generateTeachingPlan({ question: "Help", source: { image: question, region, work: { image: working, region } } })
+    const parts = bodies[0].contents[0].parts
+    expect(parts.map((p) => (p.inlineData as { data?: string } | undefined)?.data)).toEqual([undefined, "question-image", "working-image"])
+    expect(bodies[0].generationConfig.mediaResolution).toBe("MEDIA_RESOLUTION_HIGH")
+    expect(String(parts[0].text)).toContain("refers to the FIRST image")
+
+    await provider.generateTeachingPlan({ question: "What is a pulley?" })
+    expect(bodies[1].generationConfig.mediaResolution).toBeUndefined()
+  })
+
   it("does not switch models to bypass a rate limit", async () => {
     let calls = 0
     const config = loadAIConfig({ GEMINI_API_KEY: "test", GEMINI_FALLBACK_MODEL: "gemini-3.5-flash" })

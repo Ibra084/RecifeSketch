@@ -235,8 +235,15 @@ The JSON must match exactly this shape:
       "actions": [ /* 1 to ${MAX_ACTIONS_PER_STEP} action objects from the list above */ ],
       "pauseAfterMs": number   // optional, 0-5000, a short pause before the next step
     }
-  ]
+  ],
+  "followUps": [string]       // 2-3 questions the student could ask next to deepen their understanding
 }
+
+followUps: short questions (under 100 characters each) written in the
+student's own voice, e.g. "Why do we subtract 3 first?" or "What if the
+slope were steeper?". Each should push one step further than this answer -
+a why, a what-if, or the next part of the question - never repeat what you
+just explained, and never give away an answer the student hasn't reached.
 
 Use at most ${MAX_TEACHING_STEPS} steps and at most ${MAX_TOTAL_ACTIONS} actions in total across the whole plan.
 `.trim()

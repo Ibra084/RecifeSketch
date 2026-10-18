@@ -105,6 +105,31 @@ the Tailwind/shadcn setup.
 - Public deployment.
 - Anything else whose blast radius extends outside this local repo.
 
+## Mistake Memory (approved by the owner, 2026-10-18)
+
+"Check my work" in the companion checks a student's selected maths working;
+a verified mistake can be saved (table `mistakes`, RLS per student) and
+practised from the dashboard with one generated question at a time. Rules:
+the AI only reads and explains - correctness is decided by the deterministic
+checker in `src/lib/mistakes/math-check.ts` (mathjs, whitelisted node types,
+no eval); a mistake is only savable when the checker and the AI agree on the
+same step (server-signed save token); uncertain or unsupported work gets an
+honest "not sure", never a correction. MVP skills: expanding brackets,
+simplifying, linear equations. This is not a quiz system: no question bank,
+spaced repetition, scores or analytics.
+
+## Bug reports (check at the start of every session)
+
+Users report bugs from the faint bug button in the whiteboard's bottom-right
+corner. Each report is a folder in `bug-reports/` (gitignored - it may contain
+pictures of student work): `report.md` (description, console errors, status
+checklist), `screenshot.png`, `tutor.json` (the last tutor requests/answers,
+image data stripped - the model's raw boxes and plans for placement bugs) and
+`board.json` (the tldraw document). Reports from the deployed app land in the
+private `bug-reports` storage bucket; run `npm run bugs:pull` to copy them in.
+At the start of work, read any reports whose `report.md` isn't marked Fixed,
+reproduce, fix, and tick the checklist in that `report.md`.
+
 ## Project plan
 
 See `PROJECT_PLAN.md` for the phase breakdown and completion checklist.

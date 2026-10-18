@@ -56,6 +56,7 @@ export function SignInForm({ variant = "default" }: { variant?: "default" | "ali
         label={isAlias ? "Password (temporary on first sign-in)" : "Password"}
         name="password"
         autoComplete="current-password"
+        placeholder={isAlias ? "Your temporary or own password" : "Your password"}
         value={password}
         onChange={(e) => setPassword(e.target.value)}
         error={state.fieldErrors?.password}

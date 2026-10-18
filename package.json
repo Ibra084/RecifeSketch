@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
-    "alias": "node --env-file=.env.local scripts/student-alias.mts"
+    "alias": "node --env-file=.env.local scripts/student-alias.mts",
+    "bugs:pull": "node --env-file=.env.local scripts/pull-bug-reports.mts"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",
@@ -18,6 +19,7 @@
     "cn": "^0.4.0",
     "katex": "^0.16.22",
     "lucide-react": "^1.57.0",
+    "mathjs": "^15.2.0",
     "next": "16.4.1",
     "react": "19.3.0",
     "react-dom": "19.3.0",

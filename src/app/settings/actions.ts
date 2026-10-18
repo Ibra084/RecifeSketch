@@ -8,6 +8,7 @@ import { passwordProblem } from "@/lib/auth/identity"
 import { getCurrentUser } from "@/lib/auth/session"
 import { readAuthConfig } from "@/lib/auth/config"
 import { aliasToEmail } from "@/lib/auth/identity"
+import { removeAllImagesOf } from "@/lib/whiteboards/images"
 
 function field(formData: FormData, name: string): string {
   const value = formData.get(name)
@@ -52,7 +53,10 @@ export async function deleteAccountAction(_prev: FormState, formData: FormData):
     return { fieldErrors: { confirm: 'Type "delete" to confirm.' } }
   }
 
-  const { error } = await createAdminClient().auth.admin.deleteUser(user.id)
+  const admin = createAdminClient()
+  // Images first: they aren't removed with the account automatically.
+  await removeAllImagesOf(admin, user.id).catch((err) => console.warn("[settings] images not removed", err))
+  const { error } = await admin.auth.admin.deleteUser(user.id)
   if (error) return { error: friendlyAuthError(error) }
 
   const supabase = await createClient()

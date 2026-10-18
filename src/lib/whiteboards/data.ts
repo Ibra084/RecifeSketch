@@ -1,6 +1,7 @@
 import "server-only"
-import { createClient } from "@/lib/supabase/server"
+import { createAdminClient, createClient } from "@/lib/supabase/server"
 import { requireUser } from "@/lib/auth/session"
+import { removeBoardImages } from "./images"
 
 export interface WhiteboardSummary {
   id: string
@@ -57,6 +58,15 @@ export async function listWhiteboards(): Promise<WhiteboardSummary[]> {
   return (data as Row[]).map(toSummary)
 }
 
+/** True if the signed-in student owns this board (a light check - no board contents are read). */
+export async function ownsWhiteboard(id: string): Promise<boolean> {
+  if (!isWhiteboardId(id)) return false
+  const user = await requireUser()
+  const supabase = await createClient()
+  const { data, error } = await supabase.from("whiteboards").select("id").eq("id", id).eq("user_id", user.id).maybeSingle()
+  return !error && Boolean(data)
+}
+
 /** The student's most recently edited board (for "Open whiteboard" CTAs), or null. */
 export async function getLatestWhiteboard(): Promise<WhiteboardSummary | null> {
   const user = await requireUser()
@@ -87,14 +97,20 @@ export async function getWhiteboard(id: string): Promise<Whiteboard | null> {
   return { ...toSummary(data as Row), snapshot: (data as Row).snapshot ?? null }
 }
 
-export async function createWhiteboard(title = "Untitled whiteboard"): Promise<string> {
+/**
+ * Creates a board. With `id` (chosen once by the page's button), creating is
+ * idempotent: submitting the same id again - an impatient double-click, a
+ * retry - returns that same board instead of making another.
+ */
+export async function createWhiteboard(title = "Untitled whiteboard", id?: string): Promise<string> {
   const user = await requireUser()
   const supabase = await createClient()
   const { data, error } = await supabase
     .from("whiteboards")
-    .insert({ user_id: user.id, title: cleanTitle(title) })
+    .insert({ ...(id && isWhiteboardId(id) ? { id } : {}), user_id: user.id, title: cleanTitle(title) })
     .select("id")
     .single()
+  if (error?.code === "23505" && id && (await ownsWhiteboard(id))) return id // already created by an earlier submit
   if (error) throw new Error(`createWhiteboard: ${error.message}`)
   return data.id as string
 }
@@ -124,6 +140,10 @@ export async function deleteWhiteboard(id: string): Promise<boolean> {
     .eq("user_id", user.id)
     .select("id")
   if (error) throw new Error(`deleteWhiteboard: ${error.message}`)
+  if (data.length > 0) {
+    // Its pasted images go with it (best effort: a leftover image is private and harmless).
+    await removeBoardImages(createAdminClient(), user.id, id).catch((err) => console.warn("[whiteboards] images not removed", err))
+  }
   return data.length > 0
 }
 

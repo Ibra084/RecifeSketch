@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from "vitest"
 import type { SupabaseClient, User } from "@supabase/supabase-js"
 import {
   AliasAdminError,
+  aliasSeries,
+  createAliasAccounts,
+  parseAliasList,
   createAliasAccount,
   deleteAliasAccount,
   listAliasAccounts,
@@ -87,6 +90,47 @@ describe("listAliasAccounts", () => {
       ["amy01", false],
       ["zed01", true],
     ])
+  })
+})
+
+describe("bulk creation", () => {
+  it("numbers a series with even padding so it sorts in order", () => {
+    expect(aliasSeries(" Maths7B ", 3)).toEqual(["maths7b-01", "maths7b-02", "maths7b-03"])
+    expect(aliasSeries("y9", 2, 99)).toEqual(["y9-099", "y9-100"])
+    expect(aliasSeries("set-a-", 1)).toEqual(["set-a-01"])
+  })
+
+  it("refuses silly prefixes and sizes", () => {
+    expect(() => aliasSeries("", 5)).toThrow(AliasAdminError)
+    expect(() => aliasSeries("has space", 5)).toThrow(AliasAdminError)
+    expect(() => aliasSeries("maths", 0)).toThrow(AliasAdminError)
+    expect(() => aliasSeries("maths", 201)).toThrow(AliasAdminError)
+  })
+
+  it("reads a pasted list: one per line or comma-separated, de-duplicated, invalid ones reported", () => {
+    expect(parseAliasList("Maths7B-01\nmaths7b-02, maths7b-01\n\nnot-ok!  y9-07")).toEqual({
+      aliases: ["maths7b-01", "maths7b-02", "y9-07"],
+      invalid: ["not-ok!"],
+    })
+  })
+
+  it("creates the new ones, skips taken ones, and reads existing accounts only once", async () => {
+    const { client, api } = fakeAdmin([aliasUser("maths7b-02")])
+    const results = await createAliasAccounts(client, ["maths7b-01", "maths7b-02", "maths7b-03", "maths7b-01"], DOMAIN)
+    expect(results.map((r) => ("password" in r ? `${r.alias}: new` : `${r.alias}: ${r.error}`))).toEqual([
+      "maths7b-01: new",
+      "maths7b-02: Already taken",
+      "maths7b-03: new",
+    ])
+    expect(api.createUser).toHaveBeenCalledTimes(2)
+    expect(api.listUsers).toHaveBeenCalledTimes(1)
+    const passwords = results.flatMap((r) => ("password" in r ? [r.password] : []))
+    expect(new Set(passwords).size).toBe(2) // every student gets their own password
+  })
+
+  it("caps a batch", async () => {
+    const { client } = fakeAdmin([])
+    await expect(createAliasAccounts(client, Array.from({ length: 201 }, (_, i) => `s-${i + 100}`), DOMAIN)).rejects.toThrow(/At most/)
   })
 })
 

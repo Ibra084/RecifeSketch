@@ -24,15 +24,17 @@ import { MATH_SHAPE_TYPE, measureMath, type MathShape } from "./math-shape"
 import { GRAPH_PALETTE, GRAPH_SHAPE_TYPE, type GraphLine, type GraphShape } from "./graph-shape"
 import { toDesmosLatex } from "./desmos-latex"
 import { boxOutline, circleOutline, imageBoxToPage, underlineFor } from "./image-marks"
+import { refineImageBox } from "./image-refinement"
 import { APPARATUS_SHAPE, buildApparatus, placeApparatus } from "./apparatus"
 import { blockOnIncline, inclineGeometry } from "./incline"
 import { hangingMassCentre, pulleyAtCorner, stringPath, tangentPoint, type Wheel } from "./mechanics"
 import { forceArrow } from "./force-geometry"
-import { copySize, cropFor, overlapArea as figureOverlap, partOnCopy, tightenToInk, tiltedRectIn, trimProseFromFigure } from "./figure-copy"
+import { copySize, cropFor, figureCrop, overlapArea as figureOverlap, partOnCopy, snapBoxToInk, tiltedRectIn } from "./figure-copy"
 import { findPhrase, pixelRectToPage, type OcrResult } from "./text-match"
 import { computeNiceTicks, mapPointsToCanvas, sampleFunction } from "./plotting"
 import { buildDrawSegments, buildLinePointsRecord } from "./tldraw-shape-builders"
 import { AttachedLabels } from "./attached-labels"
+import { nearestClearOffset } from "./lesson-placement"
 import type { ObjectFrame } from "./force-geometry"
 import { AI_AUTHORED_META } from "./authorship"
 import type {
@@ -201,11 +203,14 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
 
   createShape(action: CreateShapeAction): void {
     const at = this.followPlanShift({ x: action.x, y: action.y })
-    this.createGeo({ ...action, x: at.x, y: at.y })
+    this.createGeo({ ...action, x: at.x, y: at.y }, { clearOfWriting: true })
   }
 
-  /** A geo shape exactly where asked (image marks use this directly - they are placed on the image, not by the plan). */
-  private createGeo(action: CreateShapeAction): void {
+  /**
+   * A geo shape exactly where asked (image marks use this directly - they are placed on the image, not by the plan).
+   * `clearOfWriting` moves a free-placed shape off any writing it would cover.
+   */
+  private createGeo(action: CreateShapeAction, options: { clearOfWriting?: boolean } = {}): void {
     const tlId = this.track(action.id, "geo", "shape", action.label)
     const placement = turnedAboutCentre(
       { x: action.x + action.w / 2, y: action.y + action.h / 2 }, action.w, action.h, action.rotation ?? 0)
@@ -226,7 +231,36 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
         },
       },
     ])
+    if (options.clearOfWriting) this.keepOffWriting(tlId)
     if (action.label) this.labels.set(tlId, action.label, action.color)
+  }
+
+  /**
+   * THE VISUALS RULE: a shape, mass, pulley or piece of apparatus placed by coordinates never lands
+   * on writing already on the board (notes, working, labels in a box) - the model can't see how its
+   * text wrapped or where the notes column put it. It moves to the nearest clear spot, and writing
+   * the plan meant to go beside it follows. Left alone: a shape drawn around writing (boxing an
+   * answer), and anything attached to another object.
+   */
+  private keepOffWriting(tlId: TLShapeId): void {
+    const planned = this.editor.getShapePageBounds(tlId)
+    if (!planned) return
+    const writing = this.editor.getCurrentPageShapes().flatMap((shape) => {
+      if (shape.id === tlId || shape.meta.recifeLabelOwner || (shape.type !== "text" && shape.type !== MATH_SHAPE_TYPE)) return []
+      if (this.editor.getShapeAncestors(shape).some((parent) => parent.id === tlId)) return []
+      const box = this.editor.getShapePageBounds(shape)
+      return box && box.w > 0 ? [{ x: box.x, y: box.y, w: box.w, h: box.h }] : []
+    })
+    const hits = writing.filter((box) => regionsIntersect(planned, box))
+    if (hits.length === 0) return
+    const surrounds = (box: { x: number; y: number; w: number; h: number }) =>
+      planned.x <= box.x && planned.y <= box.y && planned.x + planned.w >= box.x + box.w && planned.y + planned.h >= box.y + box.h
+    if (hits.every(surrounds)) return
+    const offset = nearestClearOffset({ x: planned.x, y: planned.y, w: planned.w, h: planned.h }, writing)
+    if (!offset) return // nowhere near is clear: better overlapping than far from its subject
+    const shape = this.editor.getShape(tlId)!
+    this.editor.updateShape({ id: tlId, type: shape.type, x: shape.x + offset.dx, y: shape.y + offset.dy })
+    this.planShifts.push({ area: { x: planned.x, y: planned.y, w: planned.w, h: planned.h }, dx: offset.dx, dy: offset.dy })
   }
 
   createFreehandPath(action: CreateFreehandPathAction): void {
@@ -364,9 +398,12 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
     const drawn = this.planDiagramBounds()
     const diagram = drawn ?? this.imageRegion
     const isShortLabel = !text.includes("\n") && text.trim().split(/\s+/).length <= 3 && text.length <= 28
+    // The label's whole extent counts, not just its top-left corner: one written just left of the
+    // drawing (e.g. "Primary (Input)" beside the left coil) is still on the drawing's left side.
+    const labelW = text.length * 10
     if (isShortLabel && diagram &&
-      requested.x >= diagram.x - 60 && requested.x <= diagram.x + diagram.w + 60 &&
-      requested.y >= diagram.y - 60 && requested.y <= diagram.y + diagram.h + 60) {
+      requested.x + labelW >= diagram.x - 60 && requested.x <= diagram.x + diagram.w + 60 &&
+      requested.y + 40 >= diagram.y - 60 && requested.y <= diagram.y + diagram.h + 60) {
       return requested
     }
     if (!diagram) {
@@ -683,6 +720,7 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
     const tlId = this.track(action.id, "group", "apparatus",
       `${action.kind.replace(/_/g, " ")}${action.label ? ` (${action.label})` : ""}`)
     this.editor.groupShapes(partIds, { groupId: tlId, select: false })
+    if (!targetId) this.keepOffWriting(tlId)
     if (action.label) this.labels.set(tlId, action.label, action.color)
   }
 
@@ -737,6 +775,7 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
     this.editor.updateShape({ id: tlId, type: "group", meta: {
       ...this.editor.getShape(tlId)?.meta, recifeSlope: { angle: action.angle, drawnAngle: g.drawnAngle, downhill: action.downhill },
     } })
+    this.keepOffWriting(tlId)
     if (action.label) this.labels.set(tlId, action.label, action.color)
   }
 
@@ -769,14 +808,16 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
   copyFigure(action: CopyFigureAction): void {
     const region = this.imageRegion
     if (!region) throw new Error("There is no question image to copy a figure from. Draw the diagram with the drawing actions instead.")
-    // Only the figure: any line of the question's text (read by OCR) that the box swallowed is cut away.
-    // ...then tightened to the figure's ink, so the copy isn't padded with blank paper.
-    const box = this.imageText ? tightenToInk(trimProseFromFigure(action.box, this.imageText), this.imageText.ink) : action.box
+    // Each part is snapped onto its drawn outline, so forces start exactly on the printed block.
+    const parts = (action.parts ?? []).map((part) => ({ ...part, box: refineImageBox(part.slope ? part.box : snapBoxToInk(part.box, this.imageText?.ink), this.imageText?.ink) }))
+    // Only the figure: the question's sentences are trimmed off and the crop tightened to the ink,
+    // but never through the figure's own parts - so the copy can't shrink to a sliver.
+    const box = figureCrop(action.box, parts.map((part) => part.box), this.imageText ?? undefined)
     const area = imageBoxToPage(box, region)
     // The photo on the board that the figure is in (the one it overlaps most).
     let photo: { id: TLShapeId; bounds: { x: number; y: number; w: number; h: number }; overlap: number } | undefined
     for (const shape of this.editor.getCurrentPageShapes()) {
-      if (shape.type !== "image" || shape.rotation !== 0) continue
+      if (shape.type !== "image" || this.editor.getShapePageTransform(shape).rotation() !== 0) continue
       const b = this.editor.getShapePageBounds(shape)
       const overlap = b ? figureOverlap(area, b) : 0
       if (b && overlap > 0 && (!photo || overlap > photo.overlap)) photo = { id: shape.id, bounds: { x: b.x, y: b.y, w: b.w, h: b.h }, overlap }
@@ -786,18 +827,29 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
       throw new Error("Couldn't find the question photo on the board to copy the figure from. Draw the diagram instead.")
     }
     const at = this.followPlanShift(action.position)
-    const size = copySize(area, action.width)
+    // How many real pixels the figure has in the photo, so the copy isn't enlarged past the point of blur.
+    const asset = this.editor.getAsset(source.props.assetId)
+    const shownFraction = source.props.crop ? source.props.crop.bottomRight.x - source.props.crop.topLeft.x : 1
+    const nativeWidth = asset?.type === "image" && asset.props.w > 0
+      ? (area.w / photo.bounds.w) * asset.props.w * shownFraction
+      : undefined
+    const size = copySize(area, action.width, nativeWidth)
+    if (process.env.NODE_ENV === "development") console.info("[image-targeting]", JSON.stringify({
+      requested: action.box, refined: box, region, photo: photo.bounds,
+      nativeWidth, copySize: size,
+      parts: parts.map((part, index) => ({ guessed: action.parts?.[index].box, refined: part.box })),
+    }))
     const tlId = this.track(action.id, "image", "shape", `figure copied from the question${action.label ? ` (${action.label})` : ""}`)
     this.editor.createShapes([{
       id: tlId, type: "image", x: at.x, y: at.y,
       props: {
         assetId: source.props.assetId, w: size.w, h: size.h,
         crop: cropFor(area, photo.bounds, source.props.crop ?? null),
-        playing: true, url: "", flipX: false, flipY: false, altText: "Figure from the question",
+        playing: true, url: "", flipX: source.props.flipX, flipY: source.props.flipY, altText: "Figure from the question",
       },
     }])
     const copy = { x: at.x, y: at.y, w: size.w, h: size.h }
-    for (const part of action.parts ?? []) {
+    for (const part of parts) {
       if (this.objects.has(part.id)) throw new Error(`Object id "${part.id}" already exists`)
       const r = partOnCopy(imageBoxToPage(part.box, region), area, copy)
       const partTl = this.track(part.id, "geo", "shape", "part of the copied figure")
@@ -878,6 +930,7 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
     }
     const tlId = this.track(action.id, "group", "shape", `pulley${action.label ? ` (${action.label})` : ""}`)
     this.editor.groupShapes(partIds, { groupId: tlId, select: false })
+    if (!action.at) this.keepOffWriting(tlId)
     if (action.label) this.labels.set(tlId, action.label)
   }
 
@@ -907,7 +960,7 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
       x: centre.x - w / 2, y: centre.y - h / 2, w, h,
       color: action.color ?? "black", fill: action.fill ?? "none", dash: "solid", size: "m",
       ...(action.label ? { label: action.label } : {}),
-    })
+    }, { clearOfWriting: !action.hang })
   }
 
   /**
@@ -1010,7 +1063,7 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
   /** A box, circle or underline exactly around something the model found in that image. */
   markImage(action: MarkImageAction): void {
     if (!this.imageRegion) throw new Error("There is no question image on the board to mark. Point at things with arrows and labels instead.")
-    const target = imageBoxToPage(action.box, this.imageRegion)
+    const target = imageBoxToPage(refineImageBox(action.box, this.imageText?.ink), this.imageRegion)
     const color = action.color ?? "red"
     if (action.style === "underline") {
       const { start, end } = underlineFor(target)
@@ -1475,3 +1528,4 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
     return Math.max(requested, Math.ceil(minimum) + 4)
   }
 }
+

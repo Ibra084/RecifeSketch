@@ -1,9 +1,12 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
-import { Tldraw, useValue, type Editor } from "tldraw"
+import { Tldraw, useValue, type Editor, type TLComponents } from "tldraw"
 import "tldraw/tldraw.css"
 import { attachBoardPersistence, type SavedBoard, type SaveStatus } from "./board-persistence"
+import { chooseStartingBoard, readBoardCache } from "./board-cache"
+import { boardAssetStore } from "./board-images"
+import { BugReporter } from "@/components/bug-report/bug-reporter"
 import { MathShapeUtil } from "@/lib/drawing/math-shape"
 import { GraphShapeUtil } from "@/lib/drawing/graph-shape"
 
@@ -34,10 +37,44 @@ interface WhiteboardSectionProps {
   /** A saved board to load and autosave to the server; without it the board persists locally. */
   board?: SavedBoard
   onSaveStatus?: (status: SaveStatus) => void
+  /** Hide tldraw's style panel (colours, sizes) in the top-right corner. */
+  hideStylePanel?: boolean
 }
 
-export function WhiteboardSection({ onEditorMount, board, onSaveStatus }: WhiteboardSectionProps) {
+// Module-level so tldraw sees stable objects across renders.
+const HIDDEN_STYLE_PANEL: TLComponents = { StylePanel: null }
+const DEFAULT_COMPONENTS: TLComponents = {}
+
+export function WhiteboardSection(props: WhiteboardSectionProps) {
+  const { board } = props
+  // A saved board opens from whichever copy is newest - the server's, or this browser's
+  // cached copy of work that never finished uploading. Decided before the editor mounts.
+  const [opened, setOpened] = useState<{ id: string; board: SavedBoard } | null>(null)
+  const boardId = board?.id
+  useEffect(() => {
+    if (!board) return
+    let cancelled = false
+    void readBoardCache(board.id).then((cached) => {
+      if (cancelled) return
+      const start = chooseStartingBoard(board, cached)
+      setOpened({ id: board.id, board: { ...board, snapshot: start.snapshot, needsSync: start.needsSync } })
+    })
+    return () => { cancelled = true }
+    // Only when a different board is opened; later server props must not reload the open board.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boardId])
+
+  if (!board) return <WhiteboardCanvas {...props} />
+  if (opened?.id !== board.id) {
+    return <div className="flex h-full w-full items-center justify-center bg-surface-subtle text-[13px] text-ink-muted">Opening whiteboard…</div>
+  }
+  return <WhiteboardCanvas key={opened.id} {...props} board={opened.board} />
+}
+
+function WhiteboardCanvas({ onEditorMount, board, onSaveStatus, hideStylePanel }: WhiteboardSectionProps) {
   const [editor, setEditor] = useState<Editor | null>(null)
+  // A saved board keeps pasted images in the student's storage folder, not inside its saved data.
+  const [assets] = useState(() => (board ? boardAssetStore(board.id) : undefined))
   // Read through refs so the mount callback stays stable for tldraw.
   const boardRef = useRef(board)
   const statusRef = useRef(onSaveStatus)
@@ -61,11 +98,14 @@ export function WhiteboardSection({ onEditorMount, board, onSaveStatus }: Whiteb
     <div className="relative isolate z-0 h-full w-full bg-surface-subtle">
       <Tldraw
         persistenceKey={board ? undefined : "recife-sketch-board"}
+        assets={assets}
         shapeUtils={shapeUtils}
+        components={hideStylePanel ? HIDDEN_STYLE_PANEL : DEFAULT_COMPONENTS}
         onMount={handleMount}
         licenseKey={process.env.NEXT_PUBLIC_TLDRAW_LICENSE_KEY}
       />
       <WhiteboardEmptyHint editor={editor} />
+      <BugReporter editor={editor} boardId={board?.id} />
     </div>
   )
 }

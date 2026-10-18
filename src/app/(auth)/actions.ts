@@ -103,7 +103,11 @@ export async function signUpAction(_prev: FormState, formData: FormData): Promis
       data: { terms_accepted_at: new Date().toISOString() },
     },
   })
-  if (error) return { error: friendlyAuthError(error) }
+  if (error) {
+    // Supabase's own wording (no email address), so the real cause shows in the server logs.
+    console.error("[auth] signUp failed", error.code, error.status, error.message)
+    return { error: friendlyAuthError(error) }
+  }
 
   // Supabase deliberately returns success for an already-registered email
   // (no account enumeration), so every success path lands on the same page.

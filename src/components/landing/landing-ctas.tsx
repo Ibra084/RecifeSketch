@@ -2,7 +2,7 @@ import Link from "next/link"
 import { ArrowRight } from "lucide-react"
 import { getCurrentUser } from "@/lib/auth/session"
 import { getLatestWhiteboard } from "@/lib/whiteboards/data"
-import { createWhiteboardAction } from "@/app/dashboard/actions"
+import { NewWhiteboardButton } from "@/components/dashboard/new-whiteboard-button"
 
 // Button treatments from the original landing page:
 // pill CTA → RecifeAI/src/components/Navbar.tsx; hero buttons → HeroEmailCapture.tsx.
@@ -29,11 +29,9 @@ async function OpenWhiteboard({ className, style, children }: { className: strin
     )
   }
   return (
-    <form action={createWhiteboardAction}>
-      <button type="submit" className={className} style={style}>
-        {children}
-      </button>
-    </form>
+    <NewWhiteboardButton className={className} style={style} pendingLabel="Opening…">
+      {children}
+    </NewWhiteboardButton>
   )
 }
 

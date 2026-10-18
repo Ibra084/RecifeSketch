@@ -8,7 +8,7 @@ import { WhiteboardList } from "@/components/dashboard/whiteboard-list"
 import { NoticeBanner } from "@/components/auth/fields"
 import { requireUser } from "@/lib/auth/session"
 import { listWhiteboards, type WhiteboardSummary } from "@/lib/whiteboards/data"
-import { createWhiteboardAction } from "./actions"
+import { NewWhiteboardButton } from "@/components/dashboard/new-whiteboard-button"
 
 export const metadata: Metadata = { title: "Your whiteboards · Recife Sketch" }
 
@@ -19,12 +19,11 @@ const NOTICES: Record<string, string> = {
 
 function NewWhiteboardCard() {
   return (
-    <form action={createWhiteboardAction}>
-      <button
-        type="submit"
-        className="card-hover btn-press group flex w-full items-center gap-4 rounded-2xl border border-gray-100 bg-white p-5 text-left"
-        style={{ boxShadow: "var(--shadow-soft)" }}
-      >
+    <NewWhiteboardButton
+      className="card-hover btn-press group flex min-h-[88px] w-full items-center gap-4 rounded-2xl border border-gray-100 bg-white p-5 text-left text-[15px] font-semibold text-gray-500 disabled:cursor-wait"
+      style={{ boxShadow: "var(--shadow-soft)" }}
+      pendingLabel="Creating your whiteboard…"
+    >
         <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-blue-600 text-white shadow-[0_6px_16px_-6px_rgba(37,99,235,0.6)] transition-transform duration-150 group-hover:scale-105">
           <Plus className="h-5 w-5" strokeWidth={2.25} aria-hidden />
         </span>
@@ -33,8 +32,7 @@ function NewWhiteboardCard() {
           <span className="block text-sm text-gray-400">Draw a problem, or ask Recife to explain a topic.</span>
         </span>
         <ArrowRight className="h-4 w-4 shrink-0 text-gray-300 transition-all duration-150 group-hover:translate-x-0.5 group-hover:text-blue-600" aria-hidden />
-      </button>
-    </form>
+    </NewWhiteboardButton>
   )
 }
 

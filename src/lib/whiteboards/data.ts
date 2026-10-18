@@ -97,14 +97,20 @@ export async function getWhiteboard(id: string): Promise<Whiteboard | null> {
   return { ...toSummary(data as Row), snapshot: (data as Row).snapshot ?? null }
 }
 
-export async function createWhiteboard(title = "Untitled whiteboard"): Promise<string> {
+/**
+ * Creates a board. With `id` (chosen once by the page's button), creating is
+ * idempotent: submitting the same id again - an impatient double-click, a
+ * retry - returns that same board instead of making another.
+ */
+export async function createWhiteboard(title = "Untitled whiteboard", id?: string): Promise<string> {
   const user = await requireUser()
   const supabase = await createClient()
   const { data, error } = await supabase
     .from("whiteboards")
-    .insert({ user_id: user.id, title: cleanTitle(title) })
+    .insert({ ...(id && isWhiteboardId(id) ? { id } : {}), user_id: user.id, title: cleanTitle(title) })
     .select("id")
     .single()
+  if (error?.code === "23505" && id && (await ownsWhiteboard(id))) return id // already created by an earlier submit
   if (error) throw new Error(`createWhiteboard: ${error.message}`)
   return data.id as string
 }

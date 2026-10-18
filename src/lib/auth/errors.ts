@@ -28,5 +28,9 @@ export function friendlyAuthError(error: { code?: string; status?: number; messa
     return "School email addresses can't be used. Please use a personal email address."
   }
   if (error?.status === 429) return "Too many attempts. Please wait a few minutes and try again."
+  // Supabase couldn't hand the email to the mail service (e.g. SMTP settings or an unverified sender domain).
+  if (/sending .*email/i.test(error?.message ?? "")) {
+    return "We couldn't send your email just now. Please try again in a few minutes."
+  }
   return "Something went wrong on our side. Please try again."
 }

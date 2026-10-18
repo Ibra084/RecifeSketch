@@ -30,9 +30,14 @@ describe("updateSession (configured)", () => {
   })
 
   it("leaves public pages reachable when signed out", async () => {
-    for (const path of ["/", "/sign-in", "/sign-up", "/alias", "/forgot-password", "/terms", "/auth/confirm"]) {
+    for (const path of ["/", "/sign-in", "/sign-up", "/alias", "/forgot-password", "/terms", "/auth/confirm", "/confirm-email"]) {
       expect(location(await updateSession(req(path)))).toBeNull()
     }
+  })
+
+  it("finishes an email link that Supabase sent to the bare site address", async () => {
+    expect(location(await updateSession(req("/?code=abc123")))).toBe("/auth/confirm?code=abc123")
+    expect(location(await updateSession(req("/?error=access_denied&error_code=otp_expired")))).toBe("/sign-in?error=link_used")
   })
 
   it("rejects signed-out API calls with 401", async () => {

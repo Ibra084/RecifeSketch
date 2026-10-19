@@ -70,15 +70,33 @@ export function renderMixed(text: string): string {
     const delimited = delimitBareLatex(text)
     if (delimited !== text) return renderMixed(delimited)
   }
-  let html = ""
+  const prose: string[] = []
+  const maths: string[] = []
   let last = 0
   for (const match of text.matchAll(MATH_SEGMENT)) {
-    html += plain(text.slice(last, match.index))
+    prose.push(text.slice(last, match.index))
     const [, display, bracket, inline, paren] = match
-    html += renderLatex((display ?? bracket ?? inline ?? paren)!, display !== undefined || bracket !== undefined)
+    maths.push(renderLatex((display ?? bracket ?? inline ?? paren)!, display !== undefined || bracket !== undefined))
     last = match.index + match[0].length
   }
-  return html + plain(text.slice(last))
+  prose.push(text.slice(last))
+  // A **bold** span can run across maths ("**Analyzing $y = \cos x$**"), so the markers are paired over
+  // the whole line rather than within each piece of prose; an unpaired last one stays as text.
+  let pairs = Math.floor(prose.reduce((n, p) => n + p.split("**").length - 1, 0) / 2)
+  let bold = false
+  let html = ""
+  prose.forEach((piece, i) => {
+    piece.split("**").forEach((part, j) => {
+      if (j > 0) {
+        if (bold) { html += "</strong>"; bold = false }
+        else if (pairs > 0) { html += "<strong>"; bold = true; pairs-- }
+        else html += "**"
+      }
+      html += plain(part)
+    })
+    if (i < maths.length) html += maths[i]
+  })
+  return html
 }
 
 /** LaTeX written without its `$` delimiters, e.g. a label "F_{\text{pull}} = 8.8\,\text{N}". */
@@ -122,11 +140,9 @@ export function delimitBareLatex(text: string): string {
   return out
 }
 
-/** Prose: escaped first, then `**bold**` (e.g. a "**Part (a)**" heading) and line breaks are the only markup added. */
+/** Prose: escaped first, then line breaks are the only markup added (`**bold**` is paired up in renderMixed). */
 function plain(text: string): string {
-  return escapeHtml(toDisplayMath(text))
-    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-    .replace(/\n/g, "<br>")
+  return escapeHtml(toDisplayMath(text)).replace(/\n/g, "<br>")
 }
 
 /** Text with the LaTeX markup removed, for the AI's board summary and tooltips: "$\frac{a}{b}$" -> "\frac{a}{b}". */

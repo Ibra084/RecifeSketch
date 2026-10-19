@@ -98,6 +98,8 @@ const NOTES_GAP = 48
 const NOTES_LINE_GAP = 16
 /** Wrap width for a longer note in the column. */
 const NOTES_WIDTH = 460
+/** How much of a new notes column must be clear of other content where it starts. */
+const NOTES_START_HEIGHT = 200
 /** Space kept between writing and the edge of a box it is written in. */
 const BOX_PADDING = 14
 
@@ -197,6 +199,7 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
     const tlId = createShapeId(id)
     // Everything but writing is part of what this lesson's notes sit beside.
     if (summaryKind !== "text" && summaryKind !== "equation") this.planVisuals.add(tlId)
+    this.planShapes.add(tlId)
     this.objects.set(id, { tlId, kind, summaryKind, ...(label ? { label } : {}) })
     return tlId
   }
@@ -372,6 +375,8 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
   private notes: { x: number; y: number; count: number } | null = null
   /** Everything this lesson has drawn other than writing - what its notes sit beside. */
   private planVisuals = new Set<TLShapeId>()
+  /** Everything this lesson has created, writing included. */
+  private planShapes = new Set<TLShapeId>()
 
   private planDiagramBounds(): { x: number; y: number; w: number; h: number } | null {
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
@@ -408,7 +413,7 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
     }
     if (!diagram) {
       // Nothing to sit beside: the first note sets the column, the rest stack under it.
-      this.notes ??= { x: requested.x, y: requested.y, count: 0 }
+      this.notes ??= this.clearColumnStart({ x: requested.x, y: requested.y })
     } else {
       let columnX = diagram.x + diagram.w + NOTES_GAP
       // Never over the question photo: a column that would run across it starts just past it instead.
@@ -419,11 +424,27 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
         const overlapsHorizontally = columnX < q.x + q.w && columnX + NOTES_WIDTH > q.x
         if (overlapsVertically && overlapsHorizontally) columnX = q.x + q.w + NOTES_GAP
       }
-      if (!this.notes || columnX > this.notes.x + 1) this.notes = { x: columnX, y: diagram.y, count: 0 }
+      if (!this.notes || columnX > this.notes.x + 1) this.notes = this.clearColumnStart({ x: columnX, y: diagram.y })
     }
     // A new part's heading gets a little more space above it.
     const headingGap = this.notes.count > 0 && /^\s*\*\*/.test(text) ? 20 : 0
     return { x: this.notes.x, y: this.notes.y + headingGap }
+  }
+
+  /**
+   * A new notes column starts where asked unless that would write over something this lesson didn't
+   * draw - the student's working beside the question, an earlier lesson - then at the nearest clear spot.
+   */
+  private clearColumnStart(at: { x: number; y: number }): { x: number; y: number; count: number } {
+    const isOwn = (shape: { id: TLShapeId; meta: Record<string, unknown> }) =>
+      this.planShapes.has(shape.id) || this.planShapes.has(shape.meta.recifeLabelOwner as TLShapeId)
+    const others = this.editor.getCurrentPageShapes().flatMap((shape) => {
+      if (isOwn(shape)) return []
+      const box = this.editor.getShapePageBounds(shape)
+      return box && box.w > 0 ? [{ x: box.x, y: box.y, w: box.w, h: box.h }] : []
+    })
+    const offset = nearestClearOffset({ x: at.x, y: at.y, w: NOTES_WIDTH, h: NOTES_START_HEIGHT }, others)
+    return { x: at.x + (offset?.dx ?? 0), y: at.y + (offset?.dy ?? 0), count: 0 }
   }
 
   /** The next note goes under this one. */
@@ -1114,6 +1135,7 @@ export class TldrawDrawingAdapter implements DrawingAdapter {
   beginPlan(): void {
     this.planShifts = []
     this.planVisuals = new Set()
+    this.planShapes = new Set()
     this.notes = null
   }
 

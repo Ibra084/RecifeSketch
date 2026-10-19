@@ -206,6 +206,22 @@ describe("tldraw adapter regression contracts (editor stub)", () => {
     adapter.writeText({ type: "write_text", id: "n", position: { x: 0, y: 0 }, text: "The tension is the same throughout a light string." })
     expect(shapes.get("shape:n")!.x).toBe(648) // past the question, not on top of it
   })
+  it("never starts the notes column on the student's working beside the question", () => {
+    // Bug report: a lesson that drew nothing wrote "Part (c)" straight over the handwriting next to the question.
+    const { adapter, shapes, editor } = fixture()
+    shapes.set("shape:ink", { id: "shape:ink", type: "draw", x: 660, y: 0, meta: {}, props: { w: 440, h: 300 } })
+    adapter.beginPlan()
+    adapter.setImageRegion({ x: 0, y: 0, w: 600, h: 400 })
+    adapter.writeText({ type: "write_text", id: "h", position: { x: 700, y: 0 }, text: "**Part (c)** Solve $18 + 12.1t e^{-0.15t} = 40$" })
+    adapter.writeEquation({ type: "write_equation", id: "e", position: { x: 700, y: 60 }, expression: "12.1t e^{-0.15t} = 22" })
+    const ink = editor.getShapePageBounds("shape:ink")!
+    for (const id of ["shape:h", "shape:e"]) {
+      const b = editor.getShapePageBounds(id)!
+      const overlaps = b.x < ink.x + ink.w && b.x + b.w > ink.x && b.y < ink.y + ink.h && b.y + b.h > ink.y
+      expect(overlaps, id).toBe(false)
+    }
+    expect(shapes.get("shape:e")!.x).toBe(shapes.get("shape:h")!.x) // still one column
+  })
   it("keeps a short label placed on the drawing where it was put", () => {
     const { adapter, shapes } = fixture()
     adapter.beginPlan()

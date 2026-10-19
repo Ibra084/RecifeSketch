@@ -8,12 +8,33 @@ import { buildCheckWorkPrompt, CHECK_WORK_MAX_OUTPUT_TOKENS } from "../mistakes/
 import { checkWorkModelSchema } from "../mistakes/schema"
 import { isTransientFailure, MAX_TRANSIENT_RETRIES, TRANSIENT_RETRY_DELAY_MS } from "./retry"
 import { parseTeachingPlanResponse } from "./response-parser"
-import { estimateUsage, usageFromMeasuredTokens, type UsageEstimate } from "./usage-tracker"
+import { addUsage, costFor, estimateUsage, priceFor, usageFromMeasuredTokens, type UsageEstimate } from "./usage-tracker"
 import { sourcePrompt, type QuestionSource } from "./question-source"
-import { visualPlanIssue } from "./teaching-protocol"
+import { visualPlanIssue, type TeachingPlan } from "./teaching-protocol"
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+// Cost budget. Every figure here over-estimates, so a prompt can't overshoot its ceiling.
+/** Gemini 3 reads a full-detail image as ~1120 tokens. */
+const IMAGE_TOKEN_ALLOWANCE = 1500
+/** Prompts average ~4 chars/token; 3 keeps the estimate on the high side. */
+const SAFE_CHARS_PER_TOKEN = 3
+/** Real lessons use 2-5k output tokens: a call that can't afford this would only produce a cut-off answer. */
+const MIN_TEACHING_OUTPUT_TOKENS = 4096
+/** Most a figure's "second look" (one per lesson, see locateParts) can read: its short prompt plus one image. */
+const LOCATE_INPUT_TOKEN_ALLOWANCE = 2500
+const OVER_BUDGET = "over the per-prompt cost budget"
+
+/** The largest output allowance (up to `maxOutputTokens`) a call can have within `budgetUsd`, or 0 if not `minOutputTokens`. */
+function affordableOutputTokens(args: {
+  model: string; prompt: string; imageCount: number; budgetUsd: number; maxOutputTokens: number; minOutputTokens: number
+}): number {
+  const inputTokens = Math.ceil(args.prompt.length / SAFE_CHARS_PER_TOKEN) + args.imageCount * IMAGE_TOKEN_ALLOWANCE
+  const left = args.budgetUsd - costFor(args.model, inputTokens, 0)
+  const tokens = Math.min(args.maxOutputTokens, Math.floor((left / priceFor(args.model).outputUsdPerMillion) * 1_000_000))
+  return tokens >= args.minOutputTokens ? tokens : 0
 }
 
 /**
@@ -52,12 +73,12 @@ function extractText(response: GeminiGenerateContentResponse): string | null {
 }
 
 /** Builds a `UsageEstimate` from Gemini's own reported counts, falling back to the char-based guess if it omitted them. */
-function usageFrom(response: GeminiGenerateContentResponse, prompt: string, text: string): UsageEstimate {
+function usageFrom(response: GeminiGenerateContentResponse, model: string, prompt: string, text: string): UsageEstimate {
   const { promptTokenCount, candidatesTokenCount } = response.usageMetadata ?? {}
   if (promptTokenCount !== undefined && candidatesTokenCount !== undefined) {
-    return usageFromMeasuredTokens(promptTokenCount, candidatesTokenCount + (response.usageMetadata?.thoughtsTokenCount ?? 0))
+    return usageFromMeasuredTokens(model, promptTokenCount, candidatesTokenCount + (response.usageMetadata?.thoughtsTokenCount ?? 0))
   }
-  return estimateUsage({ promptChars: prompt.length, responseChars: text.length })
+  return estimateUsage({ model, promptChars: prompt.length, responseChars: text.length })
 }
 
 type GeminiCallResult =
@@ -86,6 +107,11 @@ export class GeminiProvider implements AIProvider {
     // One deadline for the whole request: repair and transient retries share it,
     // so a struggling provider can't keep a student waiting for minutes.
     const deadline = Date.now() + config.requestTimeoutMs
+    // Everything this prompt may spend, keeping back what a figure's second look could cost.
+    const budgetUsd = config.maxCostPerPromptUsd -
+      (request.source?.image ? costFor(config.gemini.model, LOCATE_INPUT_TOKEN_ALLOWANCE, LOCATE_MAX_OUTPUT_TOKENS) : 0)
+    let spent: UsageEstimate | null = null
+    let usablePlan: TeachingPlan | null = null
 
     for (let attempt = 0; attempt <= config.maxRetries; attempt++) {
       const callResult = await this.callGeminiWithTransientRetry({
@@ -93,20 +119,29 @@ export class GeminiProvider implements AIProvider {
         model: config.gemini.model,
         prompt,
         maxOutputTokens: config.maxOutputTokens,
+        budgetUsd: budgetUsd - (spent?.estimatedCostUsd ?? 0),
         deadline,
         signal,
         // The question first (every box refers to it), then the student's working, if any.
         images: [request.source?.image, request.source?.work?.image].filter((image) => image !== undefined),
       })
-      if (!callResult.ok) return callResult
+      if (!callResult.ok) {
+        // No money left for a second try: a valid (if not ideal) first answer beats an error.
+        if (usablePlan && spent && callResult.failure.kind === "provider_error" && callResult.failure.detail === OVER_BUDGET) {
+          return { ok: true, plan: usablePlan, usage: spent }
+        }
+        return callResult
+      }
+      spent = spent ? addUsage(spent, callResult.usage) : callResult.usage
 
       const parsed = parseTeachingPlanResponse(callResult.text)
       // A valid plan must also be visual: send it back once if it only talks, or describes a
       // graph without drawing it. On the last attempt a valid plan is used rather than failing.
       const visualIssue = parsed.ok ? visualPlanIssue(parsed.plan, question) : null
       if (parsed.ok && (!visualIssue || attempt === config.maxRetries)) {
-        return { ok: true, plan: parsed.plan, usage: callResult.usage }
+        return { ok: true, plan: parsed.plan, usage: spent }
       }
+      if (parsed.ok) usablePlan = parsed.plan
 
       if (!parsed.ok && attempt === config.maxRetries) {
         return { ok: false, failure: { kind: "invalid_output", detail: parsed.error.message } }
@@ -187,11 +222,25 @@ export class GeminiProvider implements AIProvider {
    * (e.g. Gemini's own "high demand" 503) - exactly the cases a second
    * attempt is actually likely to fix, bounded so a persistently broken
    * network still fails fast rather than hanging indefinitely.
+   *
+   * With a `budgetUsd`, each call's output allowance is sized so the call
+   * can't cost more than that (failed calls aren't billed), and the backup
+   * model is only used when it fits - otherwise the primary is retried.
    */
   private async callGeminiWithTransientRetry(
-    args: Parameters<GeminiProvider["callGemini"]>[0]
+    args: Parameters<GeminiProvider["callGemini"]>[0] & { budgetUsd?: number }
   ): Promise<GeminiCallResult> {
-    let lastResult: GeminiCallResult = await this.callGemini(args)
+    const { budgetUsd, ...callArgs } = args
+    const withinBudget = (model: string) => {
+      if (budgetUsd === undefined) return callArgs.maxOutputTokens
+      return affordableOutputTokens({
+        model, prompt: callArgs.prompt, imageCount: callArgs.images?.length ?? 0, budgetUsd,
+        maxOutputTokens: callArgs.maxOutputTokens, minOutputTokens: Math.min(MIN_TEACHING_OUTPUT_TOKENS, callArgs.maxOutputTokens),
+      })
+    }
+    const primaryTokens = withinBudget(callArgs.model)
+    if (primaryTokens === 0) return { ok: false, failure: { kind: "provider_error", detail: OVER_BUDGET } }
+    let lastResult: GeminiCallResult = await this.callGemini({ ...callArgs, maxOutputTokens: primaryTokens })
 
     for (let attempt = 0; attempt < MAX_TRANSIENT_RETRIES && !lastResult.ok; attempt++) {
       if (!isTransientFailure(lastResult.failure)) return lastResult
@@ -200,11 +249,15 @@ export class GeminiProvider implements AIProvider {
       const fallback = this.options.config.gemini.fallbackModel
       const overloaded = lastResult.failure.kind === "provider_error" &&
         [500, 502, 503, 504].includes(lastResult.failure.httpStatus ?? 0)
-      if (overloaded && fallback) console.info(`[tutor] Switching from ${args.model} to ${fallback} after provider overload`)
-      lastResult = await this.callGemini({
-        ...args,
-        model: overloaded && fallback ? fallback : args.model,
-      })
+      const fallbackTokens = overloaded && fallback ? withinBudget(fallback) : 0
+      if (overloaded && fallback) {
+        console.info(fallbackTokens > 0
+          ? `[tutor] Switching from ${args.model} to ${fallback} after provider overload`
+          : `[tutor] ${fallback} would go over the per-prompt cost budget; retrying ${args.model}`)
+      }
+      lastResult = fallback && fallbackTokens > 0
+        ? await this.callGemini({ ...callArgs, model: fallback, maxOutputTokens: fallbackTokens })
+        : await this.callGemini({ ...callArgs, maxOutputTokens: primaryTokens })
     }
 
     return lastResult
@@ -280,7 +333,7 @@ export class GeminiProvider implements AIProvider {
       if (text === null) {
         return { ok: false, failure: { kind: "provider_error", detail: "Gemini response had no text content" } }
       }
-      return { ok: true, text, usage: usageFrom(json, args.prompt, text) }
+      return { ok: true, text, usage: usageFrom(json, args.model, args.prompt, text) }
     } catch (error) {
       if (args.signal?.aborted) return { ok: false, failure: { kind: "cancelled" } }
       if (controller.signal.aborted) return { ok: false, failure: { kind: "timeout" } }

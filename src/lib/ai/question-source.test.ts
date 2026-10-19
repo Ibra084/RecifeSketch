@@ -60,7 +60,8 @@ describe("past-paper question input", () => {
       expect(JSON.stringify(request.contents[0].parts[0])).toContain("PAST-PAPER QUESTION MODE")
       expect(request.generationConfig.thinkingConfig).toEqual({ thinkingLevel: "low" })
     }
-    if (result.ok) expect(result.usage.approxOutputTokens).toBe(25)
+    // Both calls' output (answer + thoughts), since the repair is part of the same prompt's cost.
+    if (result.ok) expect(result.usage.approxOutputTokens).toBe(50)
   })
 })
 

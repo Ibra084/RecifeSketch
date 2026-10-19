@@ -11,7 +11,7 @@ const hangingFetch: typeof fetch = (_url, init) =>
 describe("GeminiProvider deadline", () => {
   it("uses the configured backup on overload and preserves the question image", async () => {
     const calls: { url: string; init?: RequestInit }[] = []
-    const config = loadAIConfig({ GEMINI_API_KEY: "secret-test", GEMINI_FALLBACK_MODEL: "gemini-3.5-flash" })
+    const config = loadAIConfig({ GEMINI_API_KEY: "secret-test", GEMINI_FALLBACK_MODEL: "gemini-3.5-flash", AI_MAX_COST_PER_PROMPT_USD: "1" })
     const provider = new GeminiProvider({ config, fetchImpl: async (url, init) => {
       calls.push({ url: String(url), init })
       if (calls.length === 1) return new Response("overloaded", { status: 503 })
@@ -99,5 +99,66 @@ describe("visual answers", () => {
     expect(bodies).toHaveLength(2)
     expect(bodies[1]).toContain("must DRAW something visual")
     expect(result.ok && result.plan.steps[0].actions[0].type).toBe("draw_graph")
+  })
+})
+
+describe("per-prompt cost budget", () => {
+  const visualPlan = { concept: "Current", level: "ks3", steps: [{ commentary: "Use Ohm's law.", actions: [
+    { type: "create_shape", id: "resistor", shape: "rectangle", x: 100, y: 60, w: 80, h: 30 },
+  ] }] }
+  const textOnlyPlan = { concept: "Reciprocal graphs", level: "ks4", steps: [{ commentary: "Sketch it.", actions: [
+    { type: "write_text", id: "t", position: { x: 0, y: 0 }, text: "Roots become asymptotes" },
+  ] }] }
+  const answer = (plan: unknown, usageMetadata?: Record<string, number>) =>
+    new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(plan) }] } }], usageMetadata }))
+
+  it("leaves a normal lesson's full output allowance alone", async () => {
+    const bodies: { generationConfig: { maxOutputTokens: number } }[] = []
+    const provider = new GeminiProvider({ config: loadAIConfig({ GEMINI_API_KEY: "k" }), fetchImpl: async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)))
+      return answer(visualPlan)
+    } })
+    const image = { mimeType: "image/png" as const, data: "img", width: 100, height: 100 }
+    expect((await provider.generateTeachingPlan({ question: "Help", source: { image } })).ok).toBe(true)
+    expect(bodies[0].generationConfig.maxOutputTokens).toBe(8192)
+  })
+
+  it("retries the cheap model instead of a backup that would break the budget", async () => {
+    const urls: string[] = []
+    const config = loadAIConfig({ GEMINI_API_KEY: "k", GEMINI_FALLBACK_MODEL: "gemini-3.5-flash" })
+    const provider = new GeminiProvider({ config, fetchImpl: async (url) => {
+      urls.push(String(url))
+      return urls.length === 1 ? new Response("overloaded", { status: 503 }) : answer(visualPlan)
+    } })
+    expect((await provider.generateTeachingPlan({ question: "Help" })).ok).toBe(true)
+    expect(urls).toHaveLength(2)
+    expect(urls[1]).toContain("gemini-3.1-flash-lite:")
+  })
+
+  it("counts the repair call in the prompt's cost", async () => {
+    let calls = 0
+    const provider = new GeminiProvider({ config: loadAIConfig({ GEMINI_API_KEY: "k" }), fetchImpl: async () => {
+      calls++
+      return answer(calls === 1 ? textOnlyPlan : { ...textOnlyPlan, steps: [{ commentary: "Sketch it.", actions: [
+        { type: "draw_graph", id: "g", position: { x: 0, y: 0 }, expressions: [{ latex: "y=\frac{1}{x}" }] },
+      ] }] }, { promptTokenCount: 10_000, candidatesTokenCount: 2_000 })
+    } })
+    const result = await provider.generateTeachingPlan({ question: "Sketch the graph of y = 1/f(x)" })
+    expect(calls).toBe(2)
+    expect(result.ok && result.usage.approxInputTokens).toBe(20_000)
+    expect(result.ok && result.usage.estimatedCostUsd).toBeCloseTo(2 * (0.0025 + 0.003), 6)
+  })
+
+  it("keeps the first valid answer when a repair can't be afforded, and never goes over", async () => {
+    let calls = 0
+    const config = loadAIConfig({ GEMINI_API_KEY: "k", AI_MAX_COST_PER_PROMPT_USD: "0.02" })
+    const provider = new GeminiProvider({ config, fetchImpl: async () => {
+      calls++
+      return answer(textOnlyPlan, { promptTokenCount: 20_000, candidatesTokenCount: 6_000, thoughtsTokenCount: 2_000 })
+    } })
+    const result = await provider.generateTeachingPlan({ question: "Sketch the graph of y = 1/f(x)" })
+    expect(calls).toBe(1)
+    expect(result.ok && result.plan.steps[0].actions[0].type).toBe("write_text")
+    expect(result.ok && result.usage.estimatedCostUsd).toBeLessThanOrEqual(0.02)
   })
 })

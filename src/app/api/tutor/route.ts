@@ -128,7 +128,7 @@ export async function handleTutorRequest(request: Request, deps: TutorRouteDeps)
   }
 
   // What each answer costs, so token use can be watched (counts as reported by the provider when available).
-  console.info(`[tutor] answered: ~${result.usage.approxInputTokens} input + ${result.usage.approxOutputTokens} output tokens`)
+  console.info(`[tutor] answered: ~${result.usage.approxInputTokens} input + ${result.usage.approxOutputTokens} output tokens, ~$${result.usage.estimatedCostUsd.toFixed(4)}`)
   const existingIds = existingIdsFrom(context)
   // Earlier work (e.g. a previous graph) is never deleted unless the student asked for that.
   const resolvedPlan = protectEarlierWork(resolveTeachingPlanIds(result.plan, existingIds), existingIds, parsedBody.data.question)

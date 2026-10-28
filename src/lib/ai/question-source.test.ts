@@ -79,6 +79,22 @@ describe("selection mode", () => {
   })
 })
 
+describe("screen mode", () => {
+  it("frames the snapshot as what's on screen when nothing was selected, and still marks by box", () => {
+    const source = {
+      kind: "screen" as const,
+      image: { mimeType: "image/png" as const, data: "x".repeat(16), width: 100, height: 100 },
+      region: { x: 0, y: 0, w: 1200, h: 600 },
+    }
+    expect(questionSourceSchema.safeParse(source).success).toBe(true)
+    const prompt = sourcePrompt(source)
+    expect(prompt).toContain("SCREEN MODE")
+    expect(prompt).toContain("On-screen area bounds")
+    expect(prompt).toContain("mark_image")
+    expect(prompt).not.toContain("SELECTION MODE")
+  })
+})
+
 describe("figures in the question image", () => {
   it("tells the model to copy figures exactly, never redraw them", () => {
     const prompt = sourcePrompt({ image: { mimeType: "image/png", data: "x", width: 100, height: 100 }, region: { x: 0, y: 0, w: 600, h: 400 } })

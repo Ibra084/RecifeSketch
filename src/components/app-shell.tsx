@@ -7,6 +7,7 @@ import { RecifeWordmark } from "@/components/brand/recife-wordmark"
 import { BoardHeader } from "@/components/whiteboard/board-header"
 import type { SavedBoard, SaveStatus } from "@/components/whiteboard/board-persistence"
 import { useDeviceFlag } from "@/components/whiteboard/use-device-flag"
+import { waitForImages } from "@/components/whiteboard/image-readiness"
 import { AiCompanion, type CompanionState, type TutorSpeech } from "@/components/companion/ai-companion"
 import { CONTEXT_IMAGE, QUESTION_IMAGE, readImageUrl, readQuestionImageBlob } from "@/components/companion/question-image"
 import { useCompanionOrb } from "@/components/companion/use-companion-orb"
@@ -451,6 +452,46 @@ export function AppShell({ board, practice }: AppShellProps = {}) {
       })
       return {
         kind: "selection",
+        image: await readQuestionImageBlob(blob, QUESTION_IMAGE),
+        region: { x: bounds.x, y: bounds.y, w: Math.max(1, bounds.w), h: Math.max(1, bounds.h) },
+      }
+    },
+    imagesReady: async () => {
+      const editor = editorRef.current
+      if (!editor) return true
+      const view = editor.getViewportPageBounds()
+      const pasted = findUnattachedQuestionImage(editor)
+      const ids = new Set<TLShapeId>([
+        ...editor.getSelectedShapeIds(),
+        ...editor.getCurrentPageShapes().filter((shape) => {
+          const bounds = editor.getShapePageBounds(shape)
+          return bounds ? view.collides(bounds) : false
+        }).map((shape) => shape.id),
+        ...(pasted ? [pasted] : []),
+      ])
+      return waitForImages(editor, ids)
+    },
+    captureScreen: async () => {
+      const editor = editorRef.current
+      if (!editor) return undefined
+      const view = editor.getViewportPageBounds()
+      const visible = editor.getCurrentPageShapes().filter((shape) => {
+        const bounds = editor.getShapePageBounds(shape)
+        return bounds ? view.collides(bounds) : false
+      })
+      const content = visible.length ? editor.getShapesPageBounds(visible.map((shape) => shape.id)) : null
+      if (!content) return undefined
+      // Exactly what's on screen: everything visible, cut to the edges of the view (no empty margins).
+      const x = Math.max(content.x, view.x)
+      const y = Math.max(content.y, view.y)
+      const bounds = new Box(x, y, Math.min(content.maxX, view.maxX) - x, Math.min(content.maxY, view.maxY) - y)
+      if (bounds.w < 1 || bounds.h < 1) return undefined
+      const { blob } = await editor.toImage(visible.map((shape) => shape.id), {
+        format: "png", background: true, bounds, padding: 0,
+        pixelRatio: exportPixelRatio(bounds, QUESTION_IMAGE.maxSide!),
+      })
+      return {
+        kind: "screen",
         image: await readQuestionImageBlob(blob, QUESTION_IMAGE),
         region: { x: bounds.x, y: bounds.y, w: Math.max(1, bounds.w), h: Math.max(1, bounds.h) },
       }

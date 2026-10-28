@@ -1,12 +1,13 @@
 "use client"
 
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type PointerEvent } from "react"
-import { Bookmark, BookmarkCheck, ChevronLeft, ChevronRight, CircleCheck, CornerDownRight, MessageCircle, MousePointerClick, Paperclip, PenLine, Send, Sparkles, Square, X } from "lucide-react"
+import { Bookmark, BookmarkCheck, ChevronLeft, ChevronRight, CircleCheck, CornerDownRight, MessageCircle, Mic, MousePointerClick, Paperclip, PenLine, Send, Sparkles, Square, X } from "lucide-react"
 import type { QuestionSource } from "@/lib/ai/question-source"
 import { viewportPoint, viewportRect, type ViewportPoint, type ViewportRect, type ViewportSize } from "@/lib/overlay/coordinates"
 import { clampToViewport, placeSpeech } from "@/lib/overlay/placement"
 import { renderMixed } from "@/lib/drawing/math-render"
 import { cn } from "@/lib/utils"
+import { useVoiceInput } from "./use-voice-input"
 import { readQuestionImage } from "./question-image"
 import type { PendingMistake, TutorNote } from "./use-tutor"
 import { ORB_SIZE } from "./use-companion-orb"
@@ -141,18 +142,22 @@ export function AiCompanion(props: AiCompanionProps) {
   }, [note, onDismissNote])
 
   function collapse(returnFocus: boolean) {
+    voice.stop()
     setExpanded(false)
     if (returnFocus) orbRef.current?.focus()
   }
 
-  function submit() {
-    const question = draft.trim() || (attachment ? "Help me understand this question, starting with a hint." : "")
+  function submit(text = draft) {
+    const question = text.trim() || (attachment ? "Help me understand this question, starting with a hint." : "")
     if (!question || !canAsk) return
     onAsk(question, attachment ? { image: attachment.image } : undefined)
     setDraft("")
     setAttachment(null)
     collapse(false)
   }
+
+  // Spoken questions appear in the box as they're said, and are sent as soon as the student stops talking.
+  const voice = useVoiceInput({ onTranscript: setDraft, onFinished: (text) => submit(text) })
 
   function onOrbPointerDown(event: PointerEvent<HTMLButtonElement>) {
     if (event.button !== 0) return
@@ -383,7 +388,8 @@ export function AiCompanion(props: AiCompanionProps) {
             rows={2}
             disabled={!canAsk}
             placeholder={
-              props.selectionCount > 0 ? "Ask about what you selected, e.g. “Explain this step”"
+              voice.listening ? "Listening… ask your question out loud"
+                : props.selectionCount > 0 ? "Ask about what you selected, e.g. “Explain this step”"
                 : props.acceptsFollowUp ? "Ask a follow-up about this step…"
                 : busy ? "Recife is working - wait or stop it first"
                 : props.hasQuestionSource ? "Ask a follow-up, e.g. “Why did you use cos there?”"
@@ -401,6 +407,7 @@ export function AiCompanion(props: AiCompanionProps) {
             </div>
           )}
           {attachError && <p role="alert" className="mt-1.5 text-[12px] text-red-600">{attachError}</p>}
+          {voice.error && <p role="alert" className="mt-1.5 text-[12px] text-red-600">{voice.error}</p>}
           <div className="mt-2 flex items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-1">
               <input
@@ -453,15 +460,34 @@ export function AiCompanion(props: AiCompanionProps) {
                 </button>
               )}
             </div>
-            <button
-              type="button"
-              onClick={submit}
-              disabled={!canAsk || (!draft.trim() && !attachment)}
-              aria-label="Send question"
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground disabled:opacity-40 pointer-coarse:h-11 pointer-coarse:w-11"
-            >
-              <Send className="h-4 w-4" />
-            </button>
+            <div className="flex shrink-0 items-center gap-1">
+              {voice.supported && (
+                <button
+                  type="button"
+                  onClick={voice.listening ? voice.stop : voice.start}
+                  disabled={!canAsk}
+                  aria-label={voice.listening ? "Stop listening" : "Speak your question"}
+                  aria-pressed={voice.listening}
+                  title={voice.listening ? "Stop listening" : "Speak your question"}
+                  className={cn(
+                    "relative flex h-9 w-9 items-center justify-center rounded-xl disabled:opacity-40 pointer-coarse:h-11 pointer-coarse:w-11",
+                    voice.listening ? "bg-red-500 text-white" : "text-ink-secondary hover:bg-surface-sunken hover:text-ink"
+                  )}
+                >
+                  {voice.listening && <span aria-hidden="true" className="absolute inset-0 rounded-xl bg-red-400/40 motion-safe:animate-ping" />}
+                  <Mic className="relative h-4 w-4" />
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => submit()}
+                disabled={!canAsk || (!draft.trim() && !attachment)}
+                aria-label="Send question"
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground disabled:opacity-40 pointer-coarse:h-11 pointer-coarse:w-11"
+              >
+                <Send className="h-4 w-4" />
+              </button>
+            </div>
           </div>
         </div>
       )}

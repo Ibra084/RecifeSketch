@@ -126,8 +126,9 @@ export class GeminiProvider implements AIProvider {
         images: [request.source?.image, request.source?.work?.image].filter((image) => image !== undefined),
       })
       if (!callResult.ok) {
-        // No money left for a second try: a valid (if not ideal) first answer beats an error.
-        if (usablePlan && spent && callResult.failure.kind === "provider_error" && callResult.failure.detail === OVER_BUDGET) {
+        // The repair couldn't run (over budget, out of time, provider down): a usable
+        // (if not ideal) first answer beats an error.
+        if (usablePlan && spent && callResult.failure.kind !== "cancelled") {
           return { ok: true, plan: usablePlan, usage: spent }
         }
         return callResult
@@ -142,8 +143,11 @@ export class GeminiProvider implements AIProvider {
         return { ok: true, plan: parsed.plan, usage: spent }
       }
       if (parsed.ok) usablePlan = parsed.plan
+      else if (parsed.salvaged && !usablePlan) usablePlan = parsed.salvaged
 
       if (!parsed.ok && attempt === config.maxRetries) {
+        console.warn("[tutor] unreadable plan:", parsed.error.message.slice(0, 300))
+        if (usablePlan) return { ok: true, plan: usablePlan, usage: spent }
         return { ok: false, failure: { kind: "invalid_output", detail: parsed.error.message } }
       }
       prompt = buildRepairPrompt({

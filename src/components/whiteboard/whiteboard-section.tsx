@@ -6,6 +6,7 @@ import "tldraw/tldraw.css"
 import { attachBoardPersistence, type SavedBoard, type SaveStatus } from "./board-persistence"
 import { chooseStartingBoard, readBoardCache } from "./board-cache"
 import { boardAssetStore } from "./board-images"
+import { applyPenDefaults, fitPastedImages, keepImagesFromEraser } from "./board-defaults"
 import { BugReporter } from "@/components/bug-report/bug-reporter"
 import { MathShapeUtil } from "@/lib/drawing/math-shape"
 import { GraphShapeUtil } from "@/lib/drawing/graph-shape"
@@ -88,9 +89,16 @@ function WhiteboardCanvas({ onEditorMount, board, onSaveStatus, hideStylePanel }
     const detach = saved
       ? attachBoardPersistence(mounted, saved, (status) => statusRef.current?.(status))
       : undefined
+    applyPenDefaults(mounted)
+    const releaseEraser = keepImagesFromEraser(mounted)
+    const releaseImageFit = fitPastedImages(mounted)
     setEditor(mounted)
     onEditorMount?.(mounted)
-    return detach
+    return () => {
+      releaseEraser()
+      releaseImageFit()
+      detach?.()
+    }
   }
 
   return (

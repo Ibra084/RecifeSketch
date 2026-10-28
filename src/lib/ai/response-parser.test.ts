@@ -92,6 +92,32 @@ describe("parseTeachingPlanResponse", () => {
     }
   })
 
+  it("reads LaTeX written with single backslashes (a real Gemini answer that used to fail)", () => {
+    const raw = validPlanJson().replace(
+      `{"type":"create_shape"`,
+      String.raw`{"type":"write_equation","id":"m","position":{"x":0,"y":0},"expression":"m = 950\,\text{g} = \frac{\mu}{2}"},{"type":"create_shape"`
+    )
+    const result = parseTeachingPlanResponse(raw)
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      const eq = result.plan.steps[0].actions[0]
+      expect(eq.type === "write_equation" && eq.expression).toBe(String.raw`m = 950\,\text{g} = \frac{\mu}{2}`)
+    }
+  })
+
+  it("salvages the valid actions of a plan with one malformed action", () => {
+    const plan = JSON.parse(validPlanJson())
+    plan.steps[0].actions.push({ type: "create_shape", id: "bad", shape: "rectangle", x: "nope", y: 0, w: 1, h: 1 })
+    plan.steps.push({ commentary: "x".repeat(600), actions: [{ type: "create_shape", id: "ok2", shape: "ellipse", x: 0, y: 0, w: 5, h: 5 }] })
+    const result = parseTeachingPlanResponse(JSON.stringify(plan))
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.salvaged?.steps).toHaveLength(2)
+      expect(result.salvaged?.steps[0].actions.map((a) => ("id" in a ? a.id : ""))).toEqual(["leaf"])
+      expect(result.salvaged?.steps[1].commentary.length).toBe(400)
+    }
+  })
+
   it("rejects a non-object top-level JSON value", () => {
     const result = parseTeachingPlanResponse(JSON.stringify([1, 2, 3]))
     expect(result.ok).toBe(false)

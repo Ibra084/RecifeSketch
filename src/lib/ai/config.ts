@@ -17,6 +17,8 @@ export interface AIConfig {
     thinkingLevel?: "minimal" | "low" | "high"
   }
   maxOutputTokens: number
+  /** Hard ceiling on what one student prompt may cost in USD, across every call it makes. */
+  maxCostPerPromptUsd: number
   maxRetries: number
   requestTimeoutMs: number
   rateLimit: {
@@ -31,6 +33,7 @@ const DEFAULTS = {
   provider: "gemini" as const,
   geminiModel: "gemini-3.1-flash-lite",
   maxOutputTokens: 8192,
+  maxCostPerPromptUsd: 0.03,
   maxRetries: 1,
   requestTimeoutMs: 45_000,
   rateLimitCapacity: 8,
@@ -75,6 +78,7 @@ export function loadAIConfig(env: Record<string, string | undefined> = process.e
       thinkingLevel: env.GEMINI_THINKING_LEVEL === "high" ? "high" : env.GEMINI_THINKING_LEVEL === "minimal" ? "minimal" : "low",
     },
     maxOutputTokens: parsePositiveInt(env.AI_MAX_OUTPUT_TOKENS, DEFAULTS.maxOutputTokens),
+    maxCostPerPromptUsd: parsePositiveFloat(env.AI_MAX_COST_PER_PROMPT_USD, DEFAULTS.maxCostPerPromptUsd),
     maxRetries: parseNonNegativeInt(env.AI_MAX_RETRIES, DEFAULTS.maxRetries),
     requestTimeoutMs: parsePositiveInt(env.AI_REQUEST_TIMEOUT_MS, DEFAULTS.requestTimeoutMs),
     rateLimit: {

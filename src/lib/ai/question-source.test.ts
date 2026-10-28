@@ -60,7 +60,8 @@ describe("past-paper question input", () => {
       expect(JSON.stringify(request.contents[0].parts[0])).toContain("PAST-PAPER QUESTION MODE")
       expect(request.generationConfig.thinkingConfig).toEqual({ thinkingLevel: "low" })
     }
-    if (result.ok) expect(result.usage.approxOutputTokens).toBe(25)
+    // Both calls' output (answer + thoughts), since the repair is part of the same prompt's cost.
+    if (result.ok) expect(result.usage.approxOutputTokens).toBe(50)
   })
 })
 
@@ -75,6 +76,22 @@ describe("selection mode", () => {
     expect(prompt).toContain("Selected area bounds")
     expect(prompt).toContain("mark_image")
     expect(prompt).not.toContain("PAST-PAPER")
+  })
+})
+
+describe("screen mode", () => {
+  it("frames the snapshot as what's on screen when nothing was selected, and still marks by box", () => {
+    const source = {
+      kind: "screen" as const,
+      image: { mimeType: "image/png" as const, data: "x".repeat(16), width: 100, height: 100 },
+      region: { x: 0, y: 0, w: 1200, h: 600 },
+    }
+    expect(questionSourceSchema.safeParse(source).success).toBe(true)
+    const prompt = sourcePrompt(source)
+    expect(prompt).toContain("SCREEN MODE")
+    expect(prompt).toContain("On-screen area bounds")
+    expect(prompt).toContain("mark_image")
+    expect(prompt).not.toContain("SELECTION MODE")
   })
 })
 

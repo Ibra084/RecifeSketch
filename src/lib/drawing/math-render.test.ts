@@ -62,6 +62,15 @@ describe("renderMixed", () => {
     expect(renderMixed("**Part (a):** use $x$")).toMatch(/^<strong>Part \(a\):<\/strong> use <span class="katex">/)
     expect(renderMixed("**<img src=x>**")).toBe("<strong>&lt;img src=x&gt;</strong>")
   })
+  it("bolds a heading that has maths inside it, instead of showing the ** markers", () => {
+    // Bug report: "**Analyzing $y = 1 + \cos x$**" came out with literal asterisks either side.
+    const html = renderMixed("**Analyzing $y = 1 + \\cos x$**\n- Period: $2\\pi$")
+    expect(html).not.toContain("**")
+    expect(html).toMatch(/^<strong>Analyzing <span class="katex">.*<\/span><\/strong><br>- Period: /)
+  })
+  it("leaves an unpaired ** as text", () => {
+    expect(renderMixed("**Note $x$ here")).toMatch(/^\*\*Note <span class="katex">/)
+  })
   it("leaves a lone dollar sign as text", () => {
     expect(renderMixed("costs $5")).toBe("costs $5")
   })

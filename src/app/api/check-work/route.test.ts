@@ -15,7 +15,7 @@ const image = { mimeType: "image/png", data: "aGVsbG8gd29ybGQgaW1hZ2U=", width: 
 const request = (body: unknown) => new Request("http://localhost/api/check-work", { method: "POST", body: JSON.stringify(body) })
 const reading = (steps: string[], errorStep: number | null) => ({
   ok: true as const,
-  usage: usageFromMeasuredTokens(1, 1),
+  usage: usageFromMeasuredTokens("gemini-3.1-flash-lite", 1, 1),
   reading: {
     readable: true, confidence: "high" as const, skill: "expand_brackets" as const,
     steps: steps.map((text) => ({ text, box: [100, 100, 200, 800] as [number, number, number, number] })),

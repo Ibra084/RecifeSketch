@@ -56,6 +56,10 @@ export interface WhiteboardController {
   getSelection(): TutorContext["selection"]
   /** A picture of exactly the selected area, for the tutor to look at. */
   captureSelection(): Promise<QuestionSource | undefined>
+  /** Nothing selected: a picture of exactly what is on screen, or undefined if the view is empty. */
+  captureScreen(): Promise<QuestionSource | undefined>
+  /** Waits for pictures on screen or selected to finish uploading; false if they still aren't ready. */
+  imagesReady(): Promise<boolean>
 }
 
 /** The question chain survives a reload: what was asked and explained, and which board image is the question. */
@@ -135,12 +139,21 @@ export function useTutor(board: WhiteboardController, options: { boardId?: strin
         return
       }
 
+      setPhaseBoth("thinking")
+      // A picture pasted a moment ago may still be uploading: read it only once it's really there.
+      if (!(await board.imagesReady())) {
+        setPhaseBoth("idle")
+        say("Your picture is still uploading - give it a moment, then ask again.", "error")
+        return
+      }
+
       if (attached) {
         try {
           sourceRef.current = { source: { ...attached, kind: "question" }, id: board.placeQuestion(attached) }
           sourceIdRef.current = sourceRef.current.id
           setHasQuestionSource(true)
         } catch {
+          setPhaseBoth("idle")
           say("Couldn't place the question on the board. Please try again.", "error")
           return
         }
@@ -163,14 +176,18 @@ export function useTutor(board: WhiteboardController, options: { boardId?: strin
       }
       saveChain(historyRef.current, sourceIdRef.current)
 
-      setPhaseBoth("thinking")
       const stored = sourceRef.current
       // Anything selected on the board is what the question is about: it comes first, with a picture of exactly it.
+      // With nothing selected, it's about whatever is on screen right now. (A question attached with this
+      // message is the exception: it was just placed and is what they're asking about.)
       const selection = board.getSelection()
       let source: QuestionSource | undefined
       try {
-        if (selection) {
-          source = await board.captureSelection()
+        if (selection) source = await board.captureSelection()
+        else if (!attached) source = await board.captureScreen()
+
+        if (source) {
+          // Already have exactly what they're looking at.
         } else if (stored) {
           // The question image itself, in full detail, is what every mark refers to. The student's own
           // working beside it (if any) goes along as a second, cheaper picture for context.

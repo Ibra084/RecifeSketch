@@ -22,6 +22,19 @@ describe("toDesmosLatex", () => {
     expect(toDesmosLatex(input)).toBe(expected)
   })
 
+  it.each([
+    // Desmos rejects a power written on the function name ("sin3 is not supported, otherwise use parens").
+    ["y = \\sin^3(x) + \\ln(x)", "y = \\left(\\sin(x)\\right)^{3} + \\ln(x)"],
+    ["y=\\sin^{2}(2x)", "y=\\left(\\sin(2x)\\right)^{2}"],
+    ["y=sin^2(x)", "y=\\left(\\sin(x)\\right)^{2}"],
+    ["y=\\cos^2 x", "y=\\left(\\cos(x)\\right)^{2}"],
+    ["y=\\sin^2\\theta", "y=\\left(\\sin(\\theta)\\right)^{2}"],
+    ["y=\\sin^{-1}(x)", "y=\\arcsin(x)"],
+    ["y=\\tan^{-1} x", "y=\\arctan(x)"],
+  ])("moves a power off the function name: %s -> %s", (input, expected) => {
+    expect(toDesmosLatex(input)).toBe(expected)
+  })
+
   it("leaves proper LaTeX alone", () => {
     for (const latex of ["y=\\left|x\\right|", "y=\\sin(x)", "y=\\sqrt{x}", "y=\\frac{1}{x}", "y=\\pi x", "(2,0)", "y=x^2-4", "y=e^x", "y=\\sinh(x)"]) {
       expect(toDesmosLatex(latex)).toBe(latex)

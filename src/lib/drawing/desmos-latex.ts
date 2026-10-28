@@ -39,6 +39,47 @@ function parenthesesToBraces(text: string, pattern: RegExp, replacement: string)
   return out + rest
 }
 
+const TRIG_INVERSES = new Set(["sin", "cos", "tan"])
+
+/**
+ * `\sin^3(x)` -> `\left(\sin(x)\right)^{3}` and `\sin^{-1} x` -> `\arcsin(x)`: Desmos rejects a power
+ * written on a function's name ("sin3 is not supported, otherwise use parens"). The argument is a
+ * bracketed group, or a single number/letter/command written without brackets ("\cos^2 x").
+ */
+function powersOffFunctionNames(text: string): string {
+  const pattern = new RegExp(`\\\\(${FUNCTION_NAMES.join("|")})\\s*\\^\\s*(\\{\\s*-?\\s*[0-9]+\\s*\\}|-?[0-9])\\s*`)
+  let out = ""
+  let rest = text
+  for (let match = pattern.exec(rest); match; match = pattern.exec(rest)) {
+    const [whole, name, rawPower] = match
+    const power = rawPower.replace(/[{}\s]/g, "")
+    const argAt = match.index + whole.length
+    let argEnd: number
+    let arg: string
+    if (rest.startsWith("\\left(", argAt)) {
+      const close = rest.indexOf("\\right)", argAt)
+      if (close < 0) break
+      argEnd = close + "\\right)".length
+      arg = rest.slice(argAt + "\\left(".length, close)
+    } else if (rest[argAt] === "(" || rest[argAt] === "{") {
+      argEnd = matchingBracket(rest, argAt)
+      if (argEnd < 0) break
+      arg = rest.slice(argAt + 1, argEnd - 1)
+    } else {
+      const token = /^(\\[a-zA-Z]+|[0-9.]*[a-zA-Z]|[0-9.]+)/.exec(rest.slice(argAt))
+      if (!token) break
+      argEnd = argAt + token[0].length
+      arg = token[0]
+    }
+    const call = power === "-1" && TRIG_INVERSES.has(name)
+      ? `\\arc${name}(${arg})`
+      : `\\left(\\${name}(${arg})\\right)^{${power}}`
+    out += rest.slice(0, match.index) + call
+    rest = rest.slice(argEnd)
+  }
+  return out + rest
+}
+
 function toDesmosLatexInner(text: string): string {
   let latex = text
   latex = parenthesesToBraces(latex, /(?<![\\a-zA-Z])sqrt\s*\(|\\sqrt\(/, "\\sqrt")
@@ -50,7 +91,7 @@ function toDesmosLatexInner(text: string): string {
   for (const name of GREEK) {
     latex = latex.replace(new RegExp(`(?<![\\\\a-zA-Z])${name}(?![a-zA-Z])`, "g"), `\\${name}`)
   }
-  return latex.replace(/<=/g, "\\le ").replace(/>=/g, "\\ge ")
+  return powersOffFunctionNames(latex).replace(/<=/g, "\\le ").replace(/>=/g, "\\ge ")
 }
 
 export function toDesmosLatex(expression: string): string {
